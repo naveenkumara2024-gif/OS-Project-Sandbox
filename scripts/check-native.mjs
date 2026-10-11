@@ -24,7 +24,7 @@ function run(tool, args) {
 }
 
 const formatOk = run('clang-format', ['--dry-run', '--Werror', ...files]);
-const tidyOk = run('clang-tidy', [...cFiles, '--', '-std=c11', '-D_GNU_SOURCE']);
+const tidyOk = run('clang-tidy', [...cFiles, '--', '-std=c11']);
 
 console.log(JSON.stringify({ clangFormat: formatOk, clangTidy: tidyOk }));
 process.exitCode = formatOk && tidyOk ? 0 : 1;

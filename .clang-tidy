@@ -1,12 +1,18 @@
 # Subset per CLAUDE.md 5.4. Disabled checks and why:
 #  - bugprone-easily-swappable-parameters: noisy for thin syscall wrappers that mirror the kernel ABI.
-#  - cert-dcl37-c: flags the required `#define _GNU_SOURCE`, a documented glibc feature-test macro.
+#  - cert-dcl37-c, bugprone-reserved-identifier (cert-dcl51-cpp alias): flag the required
+#    `#define _GNU_SOURCE`, a documented glibc feature-test macro.
+#  - clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling: demands Annex K
+#    memcpy_s/memset_s, which glibc does not provide; every call here is explicitly bounded.
 Checks: >
   -*,
   bugprone-*,
   -bugprone-easily-swappable-parameters,
   cert-*,
   -cert-dcl37-c,
-  clang-analyzer-*
+  -cert-dcl51-cpp,
+  -bugprone-reserved-identifier,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
 WarningsAsErrors: '*'
 HeaderFilterRegex: 'native/src/.*'

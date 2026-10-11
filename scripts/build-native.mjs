@@ -16,7 +16,6 @@ const sources = ['main.c', 'sys.c', 'probe.c'].map((f) => join(root, 'native', '
 // -U before -D: some distributions predefine _FORTIFY_SOURCE, and -Werror would reject the clash.
 const common = [
   '-std=c11',
-  '-D_GNU_SOURCE',
   '-Wall',
   '-Wextra',
   '-Wpedantic',
@@ -80,7 +79,15 @@ function build(cc, name) {
   mkdirSync(outDir, { recursive: true });
   const out = join(outDir, 'aegis-cell');
   for (const link of mode.links) {
-    const args = [...common, ...mode.compile, ...sources, '-o', out, ...hardenedLink, ...link.flags];
+    const args = [
+      ...common,
+      ...mode.compile,
+      ...sources,
+      '-o',
+      out,
+      ...hardenedLink,
+      ...link.flags,
+    ];
     console.log(`[build-native] ${name}: ${cc} (${link.label})`);
     if (run(cc, args)) {
       console.log(`[build-native] ${name}: built ${out} as ${link.label}`);
