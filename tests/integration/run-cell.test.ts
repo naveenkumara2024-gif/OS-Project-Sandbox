@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { type PlanEnv } from '../../src/launch/rootfs-plan.js';
 import { parseMountInfo } from '../../src/probe/procfs.js';
-import { RECEIPT_LAYERS } from '../../src/sys/status.js';
+import { RECEIPT_LAYERS } from '../../src/probe/isolation.js';
 import { err, ok } from '../../src/util/result.js';
 import { helperBuilds, request, runIn, sh } from '../helpers/cell.js';
 
@@ -60,11 +60,17 @@ describe.each(helperBuilds())('cell ($name build)', (helper) => {
     expect(r.exit_code).toBeNull();
   });
 
-  it('documents that PID 1 ignores in-cell signals with the default action', async () => {
-    // Kernel rule for namespace init (pid_namespaces(7)); Stage 2 puts aegis-cell init here.
-    const r = await sh(helper, 'kill -SEGV $$; kill -KILL $$; echo survived');
+  it('keeps init alive against signals from inside the cell and forwards the catchable ones', async () => {
+    // pid_namespaces(7): signals from inside the namespace to its init are dropped unless init
+    // handles them. SIGKILL is dropped; SIGTERM is read by init and forwarded to the payload.
+    const r = await sh(
+      helper,
+      "trap 'echo got-term' TERM; kill -KILL 1; echo kill-rc=$?; kill -TERM 1; sleep 0.3; ls /proc/1 >/dev/null 2>&1 && echo init-alive",
+    );
     expect(r.termination).toEqual({ cause: 'exit' });
-    expect(r.stdout).toBe('survived\n');
+    expect(r.stdout).toContain('kill-rc=0');
+    expect(r.stdout).toContain('got-term');
+    expect(r.stdout).toContain('init-alive');
   });
 
   it('kills the whole cell on wall-clock timeout and removes the cell directory', async () => {
@@ -72,7 +78,7 @@ describe.each(helperBuilds())('cell ($name build)', (helper) => {
     const t0 = Date.now();
     const r = await sh(helper, 'sleep 30 & sleep 30', { limits: { wall_ms: 400 } }, parent);
     const took = Date.now() - t0;
-    expect(r.termination).toEqual({ cause: 'timeout' });
+    expect(r.termination).toEqual({ cause: 'timeout', clock: 'wall' });
     expect(took).toBeGreaterThanOrEqual(350);
     expect(took).toBeLessThan(4000);
     expectEmptyAndRemove(parent);
@@ -98,7 +104,7 @@ describe.each(helperBuilds())('cell ($name build)', (helper) => {
     expect(lines[2]).toBe('deny');
     expect(lines[3]).toBe('aegis');
     expect(lines.slice(4).sort()).toEqual(
-      ['bin', 'dev', 'etc', 'lib', 'lib64', 'proc', 'sbin', 'tmp', 'usr'].sort(),
+      ['.aegis-init', 'bin', 'dev', 'etc', 'lib', 'lib64', 'proc', 'sbin', 'tmp', 'usr'].sort(),
     );
   });
 
@@ -111,6 +117,7 @@ describe.each(helperBuilds())('cell ($name build)', (helper) => {
       const p = m.mountPoint;
       const allowed =
         p === '/' ||
+        p === '/.aegis-init' ||
         p === '/proc' ||
         p === '/tmp' ||
         p === '/dev' ||
@@ -145,10 +152,14 @@ describe.each(helperBuilds())('cell ($name build)', (helper) => {
     expect(fds).toEqual(expect.arrayContaining([0, 1, 2]));
   });
 
-  it('shows only the cell in /proc and starts as pid 1', async () => {
-    const r = await sh(helper, 'echo $$; ls /proc | grep -E "^[0-9]+$" | sort -n | tr "\\n" " "');
-    const [self, pids] = r.stdout.split('\n');
-    expect(self).toBe('1');
+  it('shows only the cell in /proc, with init as pid 1 and the payload as pid 2', async () => {
+    const r = await sh(
+      helper,
+      'echo $$; cat /proc/1/cmdline | tr "\\0" " "; echo; ls /proc | grep -E "^[0-9]+$" | sort -n | tr "\\n" " "',
+    );
+    const [self, init, pids] = r.stdout.split('\n');
+    expect(self).toBe('2');
+    expect(init).toContain('/.aegis-init init --');
     for (const p of (pids ?? '').trim().split(' ')) expect(Number(p)).toBeLessThan(100);
   });
 

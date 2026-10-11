@@ -25,6 +25,7 @@ const base: LaunchSpec = {
   ],
   maskFiles: ['/usr/bin/node'],
   maskDirs: ['/usr/include/node'],
+  cgroupFd: true,
 };
 
 function encode(spec: LaunchSpec): Uint8Array {

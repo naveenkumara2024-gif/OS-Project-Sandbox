@@ -18,6 +18,7 @@ const valid: LaunchSpec = {
   entries: [],
   maskFiles: [],
   maskDirs: [],
+  cgroupFd: false,
 };
 
 function good(): Buffer {
