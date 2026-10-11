@@ -23,6 +23,8 @@ jobs:
       # need unprivileged user namespaces; if the runner forbids them the tests fail loudly
       # (CLAUDE.md 7), they are not skipped.
       - run: node scripts/build-native.mjs all
+      # `npm test` runs the suite inside `systemd-run --user --scope` so cells can be placed in a
+      # delegated cgroup. A runner without a systemd user manager fails these tests by design.
       - run: npm run check
 
   native:
