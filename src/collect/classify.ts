@@ -10,6 +10,7 @@ export type Termination =
   | { readonly cause: 'output_limit'; readonly stream: 'stdout' | 'stderr' }
   | { readonly cause: `signal:${string}` }
   | { readonly cause: 'isolation_unavailable'; readonly layer: string; readonly errno: number }
+  | { readonly cause: 'exec_failed'; readonly errno: number }
   | { readonly cause: 'internal_error' };
 
 export interface Facts {
@@ -47,6 +48,13 @@ export function errnoName(n: number): string {
 export function classify(f: Facts): Classified {
   const started = f.records.some((r) => r.kind === 'started');
   if (!started) {
+    for (const r of f.records) {
+      if (r.kind === 'layer' && !r.ok && r.layer === 'exec') {
+        // The cell was fully built and the final execve failed: a problem with the command, not
+        // with isolation, and it must not be reported as a missing layer.
+        return { termination: { cause: 'exec_failed', errno: r.errno }, exitCode: null };
+      }
+    }
     for (const r of f.records) {
       if (r.kind === 'layer' && !r.ok) {
         return {

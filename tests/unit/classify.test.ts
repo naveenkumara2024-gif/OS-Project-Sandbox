@@ -51,6 +51,15 @@ describe('classify', () => {
     expect(c.termination).toEqual({ cause: 'isolation_unavailable', layer: 'root', errno: 1 });
   });
 
+  it('a failed execve is exec_failed, not a missing isolation layer', () => {
+    const c = classify({
+      records: [{ kind: 'layer', layer: 'exec', ok: false, errno: 2 }],
+      timedOut: false,
+      outputLimit: null,
+    });
+    expect(c.termination).toEqual({ cause: 'exec_failed', errno: 2 });
+  });
+
   it('no records at all is an internal error, never a clean exit', () => {
     const c = classify({ records: [], timedOut: false, outputLimit: null });
     expect(c.termination.cause).toBe('internal_error');

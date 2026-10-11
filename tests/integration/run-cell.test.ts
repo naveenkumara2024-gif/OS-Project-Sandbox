@@ -33,6 +33,17 @@ describe.each(helperBuilds())('cell ($name build)', (helper) => {
     }
   });
 
+  it('reports a missing binary as exec_failed with all layers established', async () => {
+    const r = await runIn(helper, request(['/usr/bin/aegis-no-such-command']));
+    expect(r.termination).toEqual({ cause: 'exec_failed', errno: 2 });
+    expect(r.exit_code).toBeNull();
+    expect(r.error).toBeUndefined();
+    for (const layer of RECEIPT_LAYERS) {
+      // The helper builds everything before the final execve, so the receipt is complete.
+      expect(r.isolation.layers[layer], layer).toBe(true);
+    }
+  });
+
   it('passes non-zero exit codes through', async () => {
     const r = await sh(helper, 'exit 7');
     expect(r.termination).toEqual({ cause: 'exit' });
