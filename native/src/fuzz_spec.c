@@ -60,6 +60,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     must(spec.nentries <= AEGIS_SPEC_MAX_ENTRIES);
     must(spec.nmask_files <= AEGIS_SPEC_MAX_MASKS && spec.nmask_dirs <= AEGIS_SPEC_MAX_MASKS);
     must(spec.argv[0][0] == '/');
+    must(spec.has_cgroup_fd == 0 || spec.has_cgroup_fd == 1);
     must(spec.argv[spec.argc] == NULL && spec.envp[spec.envc] == NULL);
     for (size_t i = 0; i < spec.argc; i++) {
         check_str(data, size, spec.argv[i]);

@@ -149,6 +149,7 @@ int aegis_spec_parse(const uint8_t *buf, size_t len, aegis_spec_t *out)
     int have_host = 0;
     int have_rootsz = 0;
     int have_tmpsz = 0;
+    int have_cgfd = 0;
     size_t off = AEGIS_SPEC_HEADER_BYTES;
     while (off < len) {
         if (len - off < 8U) {
@@ -276,6 +277,16 @@ int aegis_spec_parse(const uint8_t *buf, size_t len, aegis_spec_t *out)
             }
             break;
         }
+        case AEGIS_KEY_CGROUP_FD:
+            if (have_cgfd) {
+                return AEGIS_SPEC_E_DUPLICATE;
+            }
+            if (rlen != 4U || rd32(body) != AEGIS_SPEC_CGROUP_FD) {
+                return AEGIS_SPEC_E_LIMIT;
+            }
+            out->has_cgroup_fd = 1;
+            have_cgfd = 1;
+            break;
         default:
             return AEGIS_SPEC_E_KEY;
         }

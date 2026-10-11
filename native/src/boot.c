@@ -31,7 +31,7 @@
  * any failure before exec aborts the cell with a `layer <name> fail <errno>` record.
  */
 
-enum { FD_SPEC = 3, FD_STATUS = 4, FD_CONTROL = 5, FIRST_UNUSED_FD = 6 };
+enum { FD_SPEC = 3, FD_STATUS = 4, FD_CONTROL = 5, FD_CGROUP = 6, FIRST_UNUSED_FD = 7 };
 enum { EXIT_OK = 0, EXIT_NOT_ESTABLISHED = 1, EXIT_BAD_SPEC = 65, EXIT_INTERNAL = 70 };
 enum { PATH_CAP = 8192, NS_COUNT = 8, NS_LINK_CAP = 64 };
 
@@ -39,6 +39,7 @@ static uint8_t g_spec_buf[AEGIS_SPEC_MAX_BYTES + 1U];
 static aegis_spec_t g_spec;
 static char g_mountinfo[512U * 1024U];
 static char g_parent_ns[NS_COUNT][NS_LINK_CAP];
+static char g_exe_path[PATH_CAP];
 static int g_exec_pipe_w = -1;
 
 /* /proc/self/ns entry and the layer it proves. Every namespace is compared with the parent's right
@@ -50,6 +51,9 @@ static const struct {
     {"user", "userns"}, {"pid", "pidns"}, {"mnt", "mountns"},     {"net", "netns"},
     {"ipc", "ipcns"},   {"uts", "utsns"}, {"cgroup", "cgroupns"}, {"time", "timens"},
 };
+
+/* Where the helper binary appears inside the cell, so the same executable can run as PID 1. */
+#define INIT_PATH_IN_ROOT "/.aegis-init"
 
 static const char *const k_devices[] = {"null", "zero", "full", "random", "urandom", "tty"};
 enum { DEVICE_COUNT = 6 };
@@ -501,6 +505,12 @@ static void child_main(int sync_fd)
         child_fail("root", errno);
     }
 
+    /* 6b. The helper itself, read-only, so a fresh exec of it can be PID 1 of the cell. */
+    if (join_path(p, sizeof p, root, INIT_PATH_IN_ROOT) != 0 || touch_file(p) != 0 ||
+        mount(g_exe_path, p, NULL, MS_BIND, NULL) != 0 || harden_bind(p) != 0) {
+        child_fail("root", errno);
+    }
+
     /* 7. /dev, /dev/shm, /tmp, /etc. */
     if (join_path(p, sizeof p, root, "/dev") != 0 ||
         mount("tmpfs", p, "tmpfs", MS_NOSUID, "size=65536,mode=0755") != 0) {
@@ -561,9 +571,23 @@ static void child_main(int sync_fd)
     status_layer("proc", 1, 0);
     status_layer("dev", 1, 0);
 
-    /* execve with the spec's argv and an explicit environment; nothing is inherited. The status,
-     * spec and control descriptors are close-on-exec, so the payload never sees them. */
-    execve(s->argv[0], (char *const *)(uintptr_t)s->argv, (char *const *)(uintptr_t)s->envp);
+    /* Replace this process with init, which starts the payload. The environment is the spec's
+     * explicit one and init passes it on unchanged. Descriptor 4 (status) must survive this exec
+     * so init can report; 3, 5 and 6 stay close-on-exec and are closed by it. */
+    static char *init_argv[AEGIS_SPEC_MAX_ARGV + 4U];
+    size_t ia = 0;
+    init_argv[ia++] = (char *)(uintptr_t)INIT_PATH_IN_ROOT;
+    init_argv[ia++] = (char *)(uintptr_t)"init";
+    init_argv[ia++] = (char *)(uintptr_t)"--";
+    for (size_t i = 0; i < s->argc; i++) {
+        init_argv[ia++] = (char *)(uintptr_t)s->argv[i];
+    }
+    init_argv[ia] = NULL;
+    int fl = fcntl(FD_STATUS, F_GETFD);
+    if (fl < 0 || fcntl(FD_STATUS, F_SETFD, fl & ~FD_CLOEXEC) != 0) {
+        child_fail("exec", errno);
+    }
+    execve(INIT_PATH_IN_ROOT, init_argv, (char *const *)(uintptr_t)s->envp);
     child_fail("exec", errno);
 }
 
@@ -649,6 +673,11 @@ int aegis_boot_run(void)
             return EXIT_INTERNAL;
         }
     }
+    /* Descriptor 6 is optional (the cgroup directory); the spec says whether it must exist. */
+    int fl6 = fcntl(FD_CGROUP, F_GETFD);
+    if (fl6 >= 0 && fcntl(FD_CGROUP, F_SETFD, fl6 | FD_CLOEXEC) != 0) {
+        return EXIT_INTERNAL;
+    }
     if (close_range(FIRST_UNUSED_FD, ~0U, 0) != 0) {
         status_layer("spec", 0, errno);
         return EXIT_INTERNAL;
@@ -666,6 +695,22 @@ int aegis_boot_run(void)
         status_layer("spec", 0, -prc);
         return EXIT_BAD_SPEC;
     }
+
+    if (g_spec.has_cgroup_fd) {
+        struct stat cg;
+        if (fl6 < 0 || fstat(FD_CGROUP, &cg) != 0 || !S_ISDIR(cg.st_mode)) {
+            status_layer("cgroup_placement", 0, EBADF);
+            return EXIT_NOT_ESTABLISHED;
+        }
+    } else if (fl6 >= 0) {
+        close(FD_CGROUP);
+    }
+    ssize_t exe_len = readlink("/proc/self/exe", g_exe_path, sizeof g_exe_path - 1U);
+    if (exe_len < 0) {
+        status_layer("root", 0, errno);
+        return EXIT_NOT_ESTABLISHED;
+    }
+    g_exe_path[exe_len] = '\0';
 
     /* The parent's namespace identities, for the child to compare against. */
     for (size_t i = 0; i < NS_COUNT; i++) {
@@ -690,6 +735,11 @@ int aegis_boot_run(void)
     ca.flags = AEGIS_CLONE_NEWUSER | AEGIS_CLONE_NEWPID | AEGIS_CLONE_NEWNS | AEGIS_CLONE_NEWNET |
                AEGIS_CLONE_NEWIPC | AEGIS_CLONE_NEWUTS | AEGIS_CLONE_NEWCGROUP |
                AEGIS_CLONE_NEWTIME | AEGIS_CLONE_PIDFD;
+    if (g_spec.has_cgroup_fd) {
+        /* The child is born inside the cell's cgroup: there is no instant outside its limits. */
+        ca.flags |= AEGIS_CLONE_INTO_CGROUP;
+        ca.cgroup = (uint64_t)FD_CGROUP;
+    }
     ca.pidfd = (uint64_t)(uintptr_t)&pidfd;
     ca.exit_signal = (uint64_t)SIGCHLD;
 
@@ -698,12 +748,22 @@ int aegis_boot_run(void)
 
     long pid = aegis_sys_clone3(&ca, sizeof ca);
     if (pid < 0) {
-        status_layer("namespaces", 0, errno);
+        int e = errno;
+        /* With a cgroup requested, EACCES/EPERM most often means the engine is not inside the
+         * delegated subtree (the kernel needs write access to the common ancestor); the control
+         * plane turns that into an actionable hint. */
+        const char *layer = (g_spec.has_cgroup_fd && (e == EACCES || e == EPERM))
+                                ? "cgroup_placement"
+                                : "namespaces";
+        status_layer(layer, 0, e);
         return EXIT_NOT_ESTABLISHED;
     }
     if (pid == 0) {
         close(sync_pipe[1]);
         close(exec_pipe[0]);
+        if (g_spec.has_cgroup_fd) {
+            close(FD_CGROUP);
+        }
         child_main(sync_pipe[0]); /* never returns */
         _exit(92);
     }
@@ -756,8 +816,7 @@ int aegis_boot_run(void)
             if (n > 0) {
                 exec_state = 2;
             } else if (n == 0 && exec_state == 0) {
-                exec_state = 1;
-                status_num("started", pid);
+                exec_state = 1; /* init was exec'd; it reports `started` once the payload runs */
             }
             if (n >= 0 || errno != EINTR) {
                 close(fds[2].fd);
@@ -791,7 +850,6 @@ int aegis_boot_run(void)
             exec_state = 2;
         } else if (n == 0) {
             exec_state = 1;
-            status_num("started", pid);
         }
     }
 
@@ -811,10 +869,12 @@ int aegis_boot_run(void)
         }
         return EXIT_NOT_ESTABLISHED;
     }
+    /* PID 1's own fate as seen from outside the cell. init writes the payload's outcome; this is
+     * the part an in-cell process cannot rewrite. */
     if (WIFEXITED(st)) {
-        status_num("exited", WEXITSTATUS(st));
+        status_num("cellexit", WEXITSTATUS(st));
     } else if (WIFSIGNALED(st)) {
-        status_num("signaled", WTERMSIG(st));
+        status_num("cellsig", WTERMSIG(st));
     }
     return EXIT_OK;
 }
