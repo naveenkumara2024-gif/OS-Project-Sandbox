@@ -1,0 +1,3 @@
+# Stable line endings so approval hashes (docs/prompts) and lockfiles are identical on Windows and WSL.
+* text=auto eol=lf
+*.docx binary

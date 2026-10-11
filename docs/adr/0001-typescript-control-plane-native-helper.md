@@ -30,4 +30,8 @@ Options considered:
 - Negative: the project is no longer 100% TypeScript; two toolchains must be maintained; npm supply-chain exposure is new (mitigated by CLAUDE.md §6.7); path confinement and xattr access cannot be done from Node and must live in the helper.
 - The "single static binary" rationale (nothing from the host inside the cell) is preserved: the only executable inside a cell is the static helper, never Node.
 - The five contributions (CLAUDE.md §1.2) are unchanged.
-- `docs/BLUEPRINT.md` may describe a C++ implementation; deviations are recorded here and in the stage reports, and the blueprint is edited only when the owner asks.
+- The blueprint (`docs/AegisEngine R and D Blueprint.docx`, read 2026-10-11) already assumes a TypeScript orchestrator and a small C helper, so this ADR mostly aligns the contract with it. Deviations from the blueprint, all in the direction of stricter isolation or fewer moving parts:
+  - Blueprint phase 1 boots cells with `systemd-run --user --scope` + `unshare` + a shell script `aegis-boot.sh`. CLAUDE.md §6.2 forbids shell in the engine, so the C helper `aegis-cell boot` replaces the script from Stage 1; cgroup placement is by `CLONE_INTO_CGROUP` (Stage 2) rather than `systemd-run`, with the systemd delegation requirement unchanged.
+  - Blueprint path guard is `realpath` + `path.relative`. CLAUDE.md §6.3 requires `openat2` + `RESOLVE_BENEATH` in `aegis-cell fsop` because string checks are racy.
+  - Blueprint helper file name is `aegis-helper.c`; here it is `native/src/*.c` producing `aegis-cell`.
+  - The blueprint is edited only when the owner asks; these differences are repeated in each stage report that touches them.

@@ -1,10 +1,10 @@
 ---
 stage: 0
 name: scaffold
-status: draft
+status: approved
 created: 2026-10-11
-approved_at:
-approved_sha256:
+approved_at: 2026-10-11
+approved_sha256: ba14a95a7d0abad6b9d80ed37ae5a6cc56d61346ed69ec1e1d7148ec07be4b5a
 ---
 
 # Stage 0: Scaffold (TypeScript + native helper)
@@ -129,6 +129,7 @@ Privileged actions (`sudo`, `wsl.conf`, systemd, cgroup ownership): **None** by 
 7. Helper client and probe aggregation; `aegis probe` end to end; shape-guard test.
 8. `clang-tidy` and `clang-format` on `native/`; CI skeleton.
 9. Run everything, write `docs/reports/stage-0.md` with measured results.
+10. Commit on branch `stage/0-scaffold` (created from `main` at approval; commits made incrementally per step above, final commit holds the report and the `done` state). Any later fix to this stage is committed on the same branch (CLAUDE.md §0.8, §10).
 
 ## 8. Tests and acceptance gate
 
@@ -144,6 +145,7 @@ Gate, all measured and recorded in the report:
 4. `aegis probe` exits 0 on the owner's WSL2 machine; its output is parsed by a test (not checked by eye) and pasted into the report; the helper's `debug-asan` run under `probe` reports no sanitizer findings.
 5. `clang-tidy` and `clang-format --dry-run` clean on `native/`.
 6. No file outside the repository touched; no `sudo` run by Claude.
+7. All work committed on `stage/0-scaffold` with a clean working tree; the report lists the branch, base commit and final commit hash. Nothing pushed or merged.
 
 ## 9. Risks and mitigations
 

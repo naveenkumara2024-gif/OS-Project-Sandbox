@@ -1,0 +1,33 @@
+{
+  "name": "aegis-engine",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Rootless, air-gapped sandbox for untrusted AI-generated code on WSL2",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "aegis": "dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:native": "node scripts/build-native.mjs",
+    "check:native": "node scripts/check-native.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint --max-warnings 0 .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "eslint": "10.12.0",
+    "fast-check": "4.10.2",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.1",
+    "vitest": "5.0.3"
+  }
+}
