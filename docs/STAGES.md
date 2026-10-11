@@ -4,7 +4,7 @@ Single source of truth for stage state (CLAUDE.md §0.1). Statuses: `planned`, `
 
 | # | Stage | Status | Prompt | Report | Notes |
 | --- | --- | --- | --- | --- | --- |
-| 0 | Scaffold | verifying | [stage-0-scaffold.md](prompts/stage-0-scaffold.md) | [stage-0.md](reports/stage-0.md) | Code complete on `stage/0-scaffold`, **not yet built or run**. Waiting on owner: follow `docs/SETUP-WSL2.md` sections 2 to 6 and paste results |
+| 0 | Scaffold | verifying | [stage-0-scaffold.md](prompts/stage-0-scaffold.md) | [stage-0.md](reports/stage-0.md) | Code complete; native, tsc, eslint, prettier, tidy and `aegis probe` verified. **Vitest and `npm ci` not run**: Windows npm installed `node_modules`. Waiting on owner: Linux npm install, see report open question 1 |
 | 1 | Core cell | planned | | | |
 | 2 | Limits and receipts | planned | | | |
 | 3 | Workspace | planned | | | |
@@ -20,3 +20,5 @@ Single source of truth for stage state (CLAUDE.md §0.1). Statuses: `planned`, `
 - 2026-10-11: Owner decisions on open questions: write files in this directory and build/verify in WSL2 (Claude cannot run the native build or probe here, so the stage will stop at `verifying` until the owner reports measured results); `git init` already done by the owner; baseline commit made on `main`. `docs/AegisEngine R and D Blueprint.docx` read; no conflict with the prompt; deviations from the blueprint are listed in ADR 0001.
 - 2026-10-11: Stage 0 implementation written on `stage/0-scaffold` (config, utilities, bounded runner, procfs parsers, native helper skeleton, helper client, probe, CLI, tests, CI skeleton, docs). Stage -> `verifying`. Nothing was built or executed by Claude (shell is on Windows; building under `/mnt/c` is forbidden), so the report lists every gate item as pending. `package.json` has no dependency versions and there is no lockfile until the owner runs the install in `docs/SETUP-WSL2.md`.
 - 2026-10-11: Owner added a git rule: each stage is committed on its own branch `stage/<N>-<slug>` when done, and any later fix for that stage is committed on the same branch. Added to CLAUDE.md §0.3, §0.6 item 7, new §0.8, §10, §12; Stage 0 prompt step 10 and gate item 7 updated (prompt still `draft`, not yet approved).
+
+- 2026-10-11: Verification run in WSL2. Fixed duplicate `_GNU_SOURCE` (blocked every native build), two tsc errors, prettier and clang-tidy config. Stage stays `verifying`: Vitest cannot run (Windows-installed `node_modules`) and `npm ci` was not run; details in `docs/reports/stage-0.md`.
