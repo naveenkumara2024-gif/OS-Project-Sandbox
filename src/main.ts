@@ -10,9 +10,14 @@ import {
   reapOrphanCells,
 } from './launch/cgroup.js';
 import { runCell } from './launch/run-cell.js';
+import { commitChanges, resolveCommitRoot, type CommitOutcome } from './collect/commit.js';
+import { discardWorkspace } from './collect/discard.js';
+import { loadPolicy, type Policy } from './policy/policy.js';
 import { collectIsolationReport } from './probe/isolation-probe.js';
 import { reapStaleTempDirs } from './util/tempdir.js';
 import { tmpdir } from 'node:os';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { collectProbe, realProbeEnv } from './probe/probe.js';
 import { checkExecutable, locateHelper, moduleDir } from './sys/helper.js';
 import { errFromException, errnoCode, ok, type Result } from './util/result.js';
@@ -23,6 +28,15 @@ const EX_DATAERR = 65;
 const EX_SOFTWARE = 70;
 
 const NOT_IMPLEMENTED = new Set(['serve', 'mcp']);
+
+function repoPolicyPath(): string {
+  return join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'policy.default.json');
+}
+
+function loadPolicyOrDefault(): Policy {
+  const r = loadPolicy(process.env['AEGIS_POLICY_FILE'] ?? repoPolicyPath());
+  return r.ok ? r.value : { ingestRoots: [], ingestExcludes: [], commitRoots: [] };
+}
 
 function logFatal(event: string, reason: unknown): void {
   // Only the event name and an error code are logged: never the message, which could carry
@@ -131,6 +145,7 @@ async function runMode(args: readonly string[]): Promise<number> {
   const result = await runCell(req.value, {
     helperPath: helper.value.path,
     planEnv: realPlanEnv(),
+    ingestPolicy: loadPolicyOrDefault(),
   });
   if (!result.ok) {
     printJson({
@@ -140,6 +155,95 @@ async function runMode(args: readonly string[]): Promise<number> {
     return EX_SOFTWARE;
   }
   printJson(result.value);
+  return 0;
+}
+
+function workspaceDirFor(id: string): string {
+  return join(tmpdir(), `aegis-workspace-${id}`);
+}
+
+interface PersistedChanges {
+  readonly mode: 'overlay' | 'copy';
+  readonly upper: string;
+  readonly lower: string;
+  readonly changes: readonly {
+    readonly path: string;
+    readonly op: 'add' | 'modify' | 'delete';
+  }[];
+}
+
+function readPersistedChanges(id: string): Result<PersistedChanges> {
+  try {
+    const text = readFileSync(join(workspaceDirFor(id), 'changes.json'), 'utf8');
+    const data: unknown = JSON.parse(text);
+    if (typeof data !== 'object' || data === null || !('changes' in data)) {
+      return errFromException(new Error('malformed changes.json'), 'read changes.json');
+    }
+    const changes = data.changes;
+    if (!Array.isArray(changes)) {
+      return errFromException(new Error('malformed changes.json'), 'read changes.json');
+    }
+    return ok(data as PersistedChanges);
+  } catch (e) {
+    return errFromException(e, `read changes for ${id}`);
+  }
+}
+
+async function commitMode(args: readonly string[]): Promise<number> {
+  const id = args[0];
+  if (id === undefined) {
+    process.stderr.write('usage: aegis commit <run-id> [--dest <path>] [--paths p1,p2,...]\n');
+    return EX_USAGE;
+  }
+  let dest: string | undefined;
+  let paths: string[] | null = null;
+  for (let i = 1; i < args.length; i += 2) {
+    if (args[i] === '--dest') dest = args[i + 1];
+    else if (args[i] === '--paths') paths = (args[i + 1] ?? '').split(',').filter((p) => p !== '');
+  }
+  if (dest === undefined) {
+    process.stderr.write('aegis commit: --dest is required\n');
+    return EX_USAGE;
+  }
+  const persisted = readPersistedChanges(id);
+  if (!persisted.ok) {
+    printJson({ id, error: { code: 'no_such_run', detail: persisted.error.context } });
+    return EX_DATAERR;
+  }
+  const policy = loadPolicyOrDefault();
+  const root = await resolveCommitRoot(dest, policy);
+  if (!root.ok) {
+    printJson({ id, error: { code: 'commit_root_refused', detail: root.error.code } });
+    return EX_DATAERR;
+  }
+  const helper = locateHelper(process.env, moduleDir());
+  if (!helper.ok) {
+    printJson({ id, error: { code: 'helper_unavailable', detail: helper.error.code } });
+    return EX_SOFTWARE;
+  }
+  const outcomes: CommitOutcome[] = await commitChanges(
+    root.value,
+    persisted.value.upper,
+    persisted.value.changes.map((c) => ({ ...c, bytes: null, sha256: null })),
+    paths,
+    { fsopPath: helper.value.path },
+  );
+  printJson({ id, outcomes });
+  return 0;
+}
+
+function discardMode(args: readonly string[]): number {
+  const id = args[0];
+  if (id === undefined) {
+    process.stderr.write('usage: aegis discard <run-id>\n');
+    return EX_USAGE;
+  }
+  const r = discardWorkspace({ dir: workspaceDirFor(id) });
+  if (!r.ok) {
+    printJson({ id, error: { code: 'discard_failed', detail: r.error.context } });
+    return EX_SOFTWARE;
+  }
+  printJson({ id, discarded: true });
   return 0;
 }
 
@@ -161,12 +265,22 @@ async function main(argv: readonly string[]): Promise<number> {
     return runMode(argv.slice(1));
   }
 
+  if (mode === 'commit') {
+    return commitMode(argv.slice(1));
+  }
+
+  if (mode === 'discard') {
+    return discardMode(argv.slice(1));
+  }
+
   if (mode !== undefined && NOT_IMPLEMENTED.has(mode)) {
     process.stderr.write(`aegis ${mode}: not implemented yet\n`);
     return EX_USAGE;
   }
 
-  process.stderr.write('usage: aegis probe | run [--file <request.json>]\n');
+  process.stderr.write(
+    'usage: aegis probe | run [--file <request.json>] | commit <id> --dest <path> | discard <id>\n',
+  );
   return EX_USAGE;
 }
 

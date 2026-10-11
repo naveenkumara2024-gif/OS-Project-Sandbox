@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   classify,
   errnoName,
@@ -9,6 +11,14 @@ import {
   type Termination,
 } from '../collect/classify.js';
 import type { RunRequest } from '../gateway/request.js';
+import { diffCopyResult, diffOverlayUpper, type Change } from '../collect/diff.js';
+import {
+  resolveIngestSource,
+  rsyncIngest,
+  writeInlineFiles,
+  type IngestPolicy,
+} from '../stage/ingest.js';
+import { planWorkspace } from './workspace-plan.js';
 import { emptyReceiptLayers, isolationLevel, type ReceiptLayers } from '../probe/isolation.js';
 import { superviseCell, type PollVerdict } from '../supervise/cell-supervisor.js';
 import { encodeLaunchSpec, type LaunchSpec } from '../sys/launch-spec.js';
@@ -62,6 +72,9 @@ export interface CellResult {
   readonly limits_hit: readonly LimitHit[];
   readonly hint: string | null;
   readonly isolation: { readonly level: number; readonly layers: ReceiptLayers };
+  /** Present only when the request carried a workspace or inline files (Stage 3). */
+  readonly workspace?: 'overlay' | 'copy';
+  readonly changes?: readonly Change[];
   readonly error?: { readonly code: string; readonly layer: string; readonly errno: string };
 }
 
@@ -75,6 +88,11 @@ export interface RunCellDeps {
   readonly selfCgroupText?: string;
   readonly uid?: number;
   readonly pid?: number;
+  /** Stage 3: ingest policy, the parent for persisted workspace directories, and a test-only
+   * override that skips the overlay attempt and goes straight to the copy fallback. */
+  readonly ingestPolicy?: IngestPolicy;
+  readonly workspaceParent?: string;
+  readonly forceCopyWorkspace?: boolean;
 }
 
 function limitsEcho(req: RunRequest): CellResult['limits'] {
@@ -190,6 +208,61 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
     return rootDir;
   }
 
+  // 2b. Workspace ingest (Stage 3): a host source and/or inline files staged as the overlay's
+  // lower layer. The workspace directory is deliberately NOT disposed with `dir`: it must survive
+  // past this run for a later `aegis commit`/`aegis discard`.
+  const needsWorkspace = req.workspaceSource !== null || req.files.length > 0;
+  // overlayfs requires upperdir and workdir to be on the same mount (measured in the step 1
+  // spike: separate bind mounts of two host directories give EINVAL even on the same filesystem).
+  // So "upper" and "work" are subdirectories of one host directory, `rw`, bound once.
+  let workspacePaths: { lower: string; rw: string; upper: string; dir: string } | null = null;
+  if (needsWorkspace) {
+    const wsDir = join(deps.workspaceParent ?? tmpdir(), `aegis-workspace-${req.id}`);
+    try {
+      mkdirSync(wsDir);
+      const lowerDir = join(wsDir, 'lower');
+      const rwDir = join(wsDir, 'rw');
+      const upperDir = join(rwDir, 'upper');
+      const workDir = join(rwDir, 'work');
+      mkdirSync(lowerDir);
+      mkdirSync(rwDir);
+      mkdirSync(upperDir);
+      mkdirSync(workDir);
+      workspacePaths = { lower: lowerDir, rw: rwDir, upper: upperDir, dir: wsDir };
+    } catch (e) {
+      return errFromException(e, 'create workspace directory');
+    }
+    if (req.workspaceSource !== null) {
+      const policy = deps.ingestPolicy ?? { ingestRoots: [], ingestExcludes: [] };
+      const source = await resolveIngestSource(req.workspaceSource, policy, {
+        fsopPath: deps.helperPath,
+      });
+      if (!source.ok) {
+        return ok(refusal(req, 'workspace_policy', source.error.code));
+      }
+      const rsynced = await rsyncIngest(source.value, workspacePaths.lower, policy, {
+        writeExcludeFile: (content) => {
+          const excludePath = join(workspacePaths?.dir ?? wsDir, 'rsync-exclude.txt');
+          try {
+            writeFileSync(excludePath, content);
+            return Promise.resolve(ok(excludePath));
+          } catch (e) {
+            return Promise.resolve(errFromException(e, 'write rsync exclude file'));
+          }
+        },
+      });
+      if (!rsynced.ok) {
+        return ok(refusal(req, 'workspace_ingest', rsynced.error.code));
+      }
+    }
+    if (req.files.length > 0) {
+      const written = writeInlineFiles(workspacePaths.lower, req.files);
+      if (!written.ok) {
+        return ok(refusal(req, 'workspace_files', written.error.code));
+      }
+    }
+  }
+
   const env = [`PATH=${CELL_PATH}`, ...[...req.env].map(([k, v]) => `${k}=${v}`)];
   const spec: LaunchSpec = {
     argv: req.command,
@@ -202,6 +275,14 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
     maskFiles: MASK_FILES,
     maskDirs: MASK_DIRS,
     cgroupFd: true,
+    ...(workspacePaths !== null
+      ? {
+          workspace: planWorkspace(
+            { lower: workspacePaths.lower, rw: workspacePaths.rw },
+            deps.forceCopyWorkspace ?? false,
+          ),
+        }
+      : {}),
   };
   const encoded = encodeLaunchSpec(spec);
   if (!encoded.ok) {
@@ -256,6 +337,36 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
   layers.cgroup_cpu = cell.layers.cgroup_cpu;
   layers.cgroup_kill = cell.layers.cgroup_kill;
 
+  let workspaceMode: 'overlay' | 'copy' | null = null;
+  let changes: Change[] = [];
+  if (workspacePaths !== null) {
+    const wsRecord = records.find((r) => r.kind === 'workspace');
+    workspaceMode = wsRecord?.kind === 'workspace' ? wsRecord.mode : null;
+    if (workspaceMode !== null) {
+      const d =
+        workspaceMode === 'overlay'
+          ? diffOverlayUpper(workspacePaths.lower, workspacePaths.upper)
+          : diffCopyResult(workspacePaths.lower, workspacePaths.upper);
+      if (d.ok) {
+        changes = d.value;
+        try {
+          writeFileSync(
+            join(workspacePaths.dir, 'changes.json'),
+            JSON.stringify({
+              mode: workspaceMode,
+              upper: workspacePaths.upper,
+              lower: workspacePaths.lower,
+              changes,
+            }),
+          );
+        } catch {
+          // Best effort: a later `aegis commit` finds nothing recorded and reports that, rather
+          // than this already-complete run result failing over a bookkeeping write.
+        }
+      }
+    }
+  }
+
   const c = classify({
     records,
     supervisorKill: o.killedFor,
@@ -282,6 +393,7 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
       ? 'the cell did not empty after the kill; it was left for the reaper'
       : hintFor(termination, hintLimits(req)),
     isolation: { level: isolationLevel(layers), layers },
+    ...(workspacePaths !== null ? { workspace: workspaceMode ?? 'copy', changes } : {}),
   };
   if (termination.cause === 'isolation_unavailable') {
     return ok({
