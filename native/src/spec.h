@@ -45,7 +45,12 @@ enum aegis_spec_key {
     AEGIS_KEY_MASK_FILE = 8,
     AEGIS_KEY_MASK_DIR = 9,
     AEGIS_KEY_CGROUP_FD =
-        10 /* u32, must be 6: a cgroup directory fd is passed for CLONE_INTO_CGROUP */
+        10, /* u32, must be 6: a cgroup directory fd is passed for CLONE_INTO_CGROUP */
+    AEGIS_KEY_WORKSPACE_LOWER = 11, /* host path: read-only bind, the ingested snapshot */
+    /* host path: read-write bind. Must already contain "upper" and "work" subdirectories, both
+     * reachable without crossing a mount boundary, which overlayfs requires of upperdir/workdir. */
+    AEGIS_KEY_WORKSPACE_RW = 12,
+    AEGIS_KEY_WORKSPACE_FORCE_COPY = 13 /* flag (empty body): skip the overlay attempt (tests) */
 };
 
 enum aegis_root_kind {
@@ -92,6 +97,10 @@ typedef struct {
     const char *mask_dirs[AEGIS_SPEC_MAX_MASKS];
     size_t nmask_dirs;
     int has_cgroup_fd; /* the control plane passed a cgroup directory on descriptor 6 */
+    const char *workspace_lower;
+    const char *workspace_rw;
+    int has_workspace; /* both of the above were present */
+    int workspace_force_copy;
 } aegis_spec_t;
 
 /* Returns 0 on success or a negative enum aegis_spec_error value. */

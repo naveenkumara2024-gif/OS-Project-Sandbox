@@ -34,6 +34,11 @@ const seeds = {
     maskDirs: ['/usr/include/node'],
     cgroupFd: true,
   },
+  with_workspace: {
+    ...base,
+    cgroupFd: true,
+    workspace: { lower: '/tmp/aegis-ws/lower', rw: '/tmp/aegis-ws/rw', forceCopy: true },
+  },
   many_args: {
     ...base,
     argv: ['/bin/sh', ...Array.from({ length: 60 }, (_, i) => `arg${String(i)}`)],

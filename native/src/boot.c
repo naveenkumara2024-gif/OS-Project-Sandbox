@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "boot.h"
 
+#include "overlay.h"
 #include "spec.h"
 #include "sys.h"
 
@@ -511,6 +512,33 @@ static void child_main(int sync_fd)
         child_fail("root", errno);
     }
 
+    /* 6c. The workspace binds (Stage 3). Lower is a read-only bind of the ingested snapshot.
+     * workspace_rw is a single host directory that already contains "upper" and "work"
+     * subdirectories (made by the control plane); it is bound once at /workspace-rw so overlayfs
+     * sees upperdir and workdir on the same mount, which the kernel requires (EINVAL otherwise:
+     * confirmed on this kernel before writing this code). /workspace is a second, separate bind of
+     * workspace_rw's "upper" subdirectory: the copy-mode fallback writes straight into it, and if
+     * overlay mounts successfully it stacks over this bind and replaces the view, so the aliasing
+     * is harmless either way. The overlay mount itself happens after pivot_root. */
+    if (s->has_workspace) {
+        if (join_path(p, sizeof p, root, "/workspace-lower") != 0 || mkdir(p, 0755) != 0 ||
+            mount(s->workspace_lower, p, NULL, MS_BIND, NULL) != 0 || harden_bind(p) != 0) {
+            child_fail("workspace", errno);
+        }
+        if (join_path(p, sizeof p, root, "/workspace-rw") != 0 || mkdir(p, 0755) != 0 ||
+            mount(s->workspace_rw, p, NULL, MS_BIND, NULL) != 0) {
+            child_fail("workspace", errno);
+        }
+        char rw_upper_src[PATH_CAP];
+        if (snprintf(rw_upper_src, sizeof rw_upper_src, "%s/upper", s->workspace_rw) < 0) {
+            child_fail("workspace", ENAMETOOLONG);
+        }
+        if (join_path(p, sizeof p, root, "/workspace") != 0 || mkdir(p, 0755) != 0 ||
+            mount(rw_upper_src, p, NULL, MS_BIND, NULL) != 0) {
+            child_fail("workspace", errno);
+        }
+    }
+
     /* 7. /dev, /dev/shm, /tmp, /etc. */
     if (join_path(p, sizeof p, root, "/dev") != 0 ||
         mount("tmpfs", p, "tmpfs", MS_NOSUID, "size=65536,mode=0755") != 0) {
@@ -563,6 +591,26 @@ static void child_main(int sync_fd)
         child_fail("utsns", errno);
     }
     umask(022);
+
+    if (s->has_workspace) {
+        int used_overlay = 0;
+        int overlay_errno = 0;
+        int rc = aegis_overlay_mount(s->workspace_force_copy, &used_overlay, &overlay_errno);
+        if (rc != 0) {
+            status_layer("workspace", 0, -rc);
+            child_fail("workspace", -rc);
+        }
+        if (used_overlay) {
+            status_layer("overlay", 1, 0);
+        } else if (overlay_errno != 0) {
+            /* Non-fatal: reported so the receipt can say why the run fell back to a copy. */
+            status_layer("overlay", 0, overlay_errno);
+        }
+        status_line(used_overlay ? "workspace overlay\n" : "workspace copy\n");
+        if (chdir("/workspace") != 0) {
+            child_fail("workspace", errno);
+        }
+    }
 
     for (size_t i = 0; i < NS_COUNT; i++) {
         status_layer(k_ns[i].layer, 1, 0);
