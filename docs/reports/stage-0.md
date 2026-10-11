@@ -3,9 +3,9 @@
 - Branch: `stage/0-scaffold`, created from `main` at `a3ddec7`.
 - Prompt: `docs/prompts/stage-0-scaffold.md`, approved 2026-10-11, SHA-256
   `ba14a95a7d0abad6b9d80ed37ae5a6cc56d61346ed69ec1e1d7148ec07be4b5a`.
-- **Status: PARTIALLY VERIFIED (2026-10-11, WSL2, Node 22.22.1).** Everything except Vitest, the
-  `npm ci` gate item and the Clang ASan build has been run and is recorded under "Results". Stage 0
-  stays `verifying` until the Linux-side install is redone and `npm run check` runs end to end.
+- **Status: VERIFIED except the Clang `debug-asan` build (2026-10-11, WSL2, Node 22.22.1, npm
+  9.2.0).** `npm ci --ignore-scripts` and `npm run check` pass on Linux npm. Stage 0 stays
+  `verifying` only until `libclang-rt-21-dev` is installed and the Clang ASan build is run.
 
 ## What changed
 
@@ -49,64 +49,8 @@
 
 ## Open questions
 
-1. Which Node.js version is installed in the WSL2 distribution? (recorded once the probe runs)
-2. After the install, commit `package.json` and `package-lock.json` yourself, or should Claude?
-
-## Fixes made while verifying (all in Stage 0 scope)
-
-1. `scripts/build-native.mjs`: removed `-D_GNU_SOURCE`; every `.c` file already defines it and
-   `-Werror` rejected the redefinition, so no native build could succeed. `scripts/check-native.mjs`
-   likewise.
-2. `src/probe/probe.ts`: `process.getuid`/`getgid` are optional in `@types/node`; now `?.() ?? null`
-   (tsc TS2722 at lines 287-288).
-3. `.clang-tidy`: disabled `bugprone-reserved-identifier`/`cert-dcl51-cpp` (the required
-   `_GNU_SOURCE`) and `clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling`
-   (demands Annex K `memcpy_s`, absent from glibc; the calls are bounded). Reason is in the file.
-4. Prettier reformatted `scripts/build-native.mjs`, `src/probe/probe.ts`, `src/util/result.ts`.
-
-## Results
-
-Commands were run from `~/aegis-engine` (ext4) in WSL2 `6.18.33.2-microsoft-standard-WSL2`, GCC
-15.2.0, Clang 21.1.8, Node 22.22.1. **Environment problem:** `npm` on `PATH` is the Windows
-`npm` (`/mnt/c/Program Files/nodejs`); the Linux Node (`/usr/bin/node`) has no npm. The existing
-`node_modules` and `package-lock.json` were therefore created by Windows npm, `node_modules` holds
-`@rolldown/binding-win32-x64-msvc` only, and `npm run` fails (cmd.exe cannot use a UNC cwd). The
-TypeScript tools were run directly with `node node_modules/<tool>` instead.
-
-| Gate item | Result |
-| --- | --- |
-| `npm ci --ignore-scripts` from lockfile | **not run** (no Linux npm; see above) |
-| `tsc --noEmit` | pass after fix 2 (2 errors before) |
-| `eslint --max-warnings 0 .` | pass |
-| `prettier --check .` | pass after fix 4 (3 files before) |
-| `vitest run` | **fails to start**: rolldown has no Linux binding in the Windows-installed `node_modules`. Tests have not run. |
-| Native `release` + `debug-asan`, `-Werror`, GCC | pass after fix 1 (both fail before); release is `static-pie` |
-| Native `release`, `-Werror`, Clang | pass (static-pie) |
-| Native `debug-asan`, Clang | **fails to link**: `libclang_rt.asan*.a` missing under `/usr/lib/llvm-21`; needs the owner to install the Clang runtime package |
-| `file` / `ldd` of release helper | ELF 64-bit PIE, static-pie linked; `ldd`: statically linked |
-| debug-asan helper `probe` run | output identical to release, no sanitizer report on stderr |
-| `clang-format --dry-run`, `clang-tidy` | both clean after fix 3 |
-| `aegis probe` (built via `tsc -p tsconfig.build.json`, run as `node dist/main.js probe`) | exit 0, helper found and available, full JSON below |
-| Dependencies | 156 packages in lockfile, all `dev`, 27 optional (platform binaries), all resolved from `registry.npmjs.org`; only install script: `fsevents` (macOS-only optional). `npm audit` **not run** |
-
-### `aegis probe` facts that matter for later stages
-
-- Kernel `6.18.33.2-microsoft-standard-WSL2`, x64, Node `22.22.1`, uid/gid 1000, `/mnt/c` present,
-  `WSLInterop` registered in binfmt_misc (so cell isolation of interop will matter in Stage 4).
-- `max_user_namespaces` 30219; helper: `unshare(CLONE_NEWUSER)` true, `clone3` reachable (EINVAL for
-  size=0 is the expected "exists" answer), `openat2` `RESOLVE_BENEATH` true, `pidfd_open` true,
-  Landlock ABI 7, `seccomp_mode` 0, `no_new_privs` 0.
-- cgroup v2 at `/sys/fs/cgroup`, own cgroup `/init.scope` with controllers `cpu memory pids`,
-  `cgroup.subtree_control` empty, **`cgroup.procs` not writable by the user (EACCES)**: no delegated
-  subtree yet. `cgroup.kill` and `memory.peak` exist. Stage 2 needs the delegation in SETUP-WSL2.md.
-- cwd filesystem magic 61267 (0xEF53, ext4). `overlay` is listed in `/proc/filesystems`; an actual
-  unprivileged overlay mount is not probed until Stage 3.
-
-## Open questions
-
-1. Install a Linux npm (for example `sudo apt install npm`, or Node from NodeSource/nvm) and put it
-   ahead of `/mnt/c/...` on `PATH` (or set `[interop] appendWindowsPath=false` in `/etc/wsl.conf`).
-   Then: `rm -rf node_modules && npm ci --ignore-scripts && npm run check && npm audit`. Claude must
-   not run the `sudo`/`wsl.conf` step (CLAUDE.md 6.6).
-2. Install the Clang ASan runtime (`libclang-rt-21-dev`) if Clang ASan coverage is wanted; GCC ASan
-   is already covered.
+1. Install the Clang ASan runtime (`libclang-rt-21-dev`, needs `sudo`) so gate item 3 (`debug-asan`
+   under both GCC and Clang) can be met; then Claude re-runs `node scripts/build-native.mjs all
+   --cc=clang` and the helper probe. Alternatively, the owner may accept GCC-only ASan; if so, record
+   it here and in `docs/STAGES.md`.
+2. Branch `stage/0-scaffold` is based on `main` `a3ddec7`; merging is the owner's decision.
