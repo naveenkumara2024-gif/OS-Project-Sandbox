@@ -1,0 +1,12 @@
+# Subset per CLAUDE.md 5.4. Disabled checks and why:
+#  - bugprone-easily-swappable-parameters: noisy for thin syscall wrappers that mirror the kernel ABI.
+#  - cert-dcl37-c: flags the required `#define _GNU_SOURCE`, a documented glibc feature-test macro.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  cert-*,
+  -cert-dcl37-c,
+  clang-analyzer-*
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'native/src/.*'
