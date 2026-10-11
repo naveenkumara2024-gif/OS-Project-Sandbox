@@ -1,10 +1,10 @@
 ---
 stage: 0
 name: scaffold
-status: draft
+status: approved
 created: 2026-10-11
-approved_at:
-approved_sha256:
+approved_at: 2026-10-11
+approved_sha256: ba14a95a7d0abad6b9d80ed37ae5a6cc56d61346ed69ec1e1d7148ec07be4b5a
 ---
 
 # Stage 0: Scaffold (TypeScript + native helper)

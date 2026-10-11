@@ -90,7 +90,7 @@ When the owner reports a problem, or wants a change, in a stage that is already 
 
 **AegisEngine** is a rootless, air-gapped sandbox for running untrusted AI-generated code on WSL2 Ubuntu, built directly on Linux kernel primitives. It creates a throwaway "cell" per request (namespaces, a minimal private root filesystem, a copy-on-write workspace, cgroup v2 limits, privilege dropping and a syscall filter), runs the code, and returns a structured JSON receipt: stdout, stderr, exit code, why the run ended, resource usage, which isolation layers were active, and a diff of every file changed.
 
-The authoritative design is the **AegisEngine R and D Blueprint** (a Claude Docs artifact owned by the user). A copy lives at `docs/BLUEPRINT.md`. Treat it as the source of truth. Deviations are recorded as ADRs in `docs/adr/`, never silently.
+The authoritative design is the **AegisEngine R and D Blueprint** (a Claude Docs artifact owned by the user). A copy lives in `docs/` as `AegisEngine R and D Blueprint.docx` (this file's other references to `docs/BLUEPRINT.md` mean that document). Treat it as the source of truth. Deviations are recorded as ADRs in `docs/adr/`, never silently.
 
 ### 1.1 Thesis
 
