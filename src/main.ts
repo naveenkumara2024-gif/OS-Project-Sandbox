@@ -2,7 +2,17 @@
 import { readFileSync, readSync } from 'node:fs';
 import { MAX_REQUEST_BYTES, parseRunRequest } from './gateway/request.js';
 import { realPlanEnv } from './launch/rootfs-plan.js';
+import {
+  ensureParent,
+  locateDelegation,
+  pidIsAlive,
+  realCgroupFs,
+  reapOrphanCells,
+} from './launch/cgroup.js';
 import { runCell } from './launch/run-cell.js';
+import { collectIsolationReport } from './probe/isolation-probe.js';
+import { reapStaleTempDirs } from './util/tempdir.js';
+import { tmpdir } from 'node:os';
 import { collectProbe, realProbeEnv } from './probe/probe.js';
 import { checkExecutable, locateHelper, moduleDir } from './sys/helper.js';
 import { errFromException, errnoCode, ok, type Result } from './util/result.js';
@@ -65,6 +75,24 @@ function readRequest(path: string | null): Result<Buffer> {
   }
 }
 
+/** Removes cells left behind by engine processes that no longer exist (CLAUDE.md 6.1 item 7). */
+async function reapOrphans(): Promise<void> {
+  const fs = realCgroupFs();
+  try {
+    const text = readFileSync('/proc/self/cgroup', 'utf8');
+    const del = locateDelegation(fs, process.getuid?.() ?? -1, text);
+    if (del.ok) {
+      const parent = ensureParent(fs, del.value.root);
+      if (parent.ok) {
+        await reapOrphanCells(fs, parent.value.path);
+      }
+    }
+  } catch {
+    // Reaping is best effort: a failure here must not stop a run, and the next run retries.
+  }
+  reapStaleTempDirs(tmpdir(), pidIsAlive);
+}
+
 async function runMode(args: readonly string[]): Promise<number> {
   let file: string | null = null;
   if (args.length === 2 && args[0] === '--file' && args[1] !== undefined) {
@@ -99,6 +127,7 @@ async function runMode(args: readonly string[]): Promise<number> {
     return EX_SOFTWARE;
   }
 
+  await reapOrphans();
   const result = await runCell(req.value, {
     helperPath: helper.value.path,
     planEnv: realPlanEnv(),
@@ -119,7 +148,12 @@ async function main(argv: readonly string[]): Promise<number> {
 
   if (mode === 'probe') {
     const report = await collectProbe(realProbeEnv());
-    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    const helper = locateHelper(process.env, moduleDir());
+    const helperPath =
+      helper.ok && checkExecutable(helper.value.path).ok ? helper.value.path : null;
+    await reapOrphans();
+    const isolation = await collectIsolationReport(helperPath);
+    process.stdout.write(`${JSON.stringify({ ...report, isolation }, null, 2)}\n`);
     return 0;
   }
 

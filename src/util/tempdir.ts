@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { err, errFromException, ok, type Result } from './result.js';
@@ -56,4 +56,45 @@ export class TempDir implements Disposable {
     }
     rmdirSync(this.path);
   }
+}
+
+/**
+ * Removes empty per-cell directories (`aegis-cell-<pid>-*`) left by engine processes that no
+ * longer exist. Non-recursive: a directory with anything in it is left alone, and so is any
+ * directory whose pid is alive.
+ */
+export function reapStaleTempDirs(
+  parent: string,
+  isAlive: (pid: number) => boolean,
+): { removed: number; skipped: number } {
+  let removed = 0;
+  let skipped = 0;
+  let names: string[];
+  try {
+    names = readdirSync(parent);
+  } catch {
+    return { removed, skipped };
+  }
+  for (const name of names) {
+    const m = /^aegis-cell-(\d+)-[A-Za-z0-9]+$/.exec(name);
+    const pidText = m?.[1];
+    if (pidText === undefined) continue;
+    if (isAlive(Number(pidText))) {
+      skipped += 1;
+      continue;
+    }
+    const dir = join(parent, name);
+    try {
+      for (const sub of readdirSync(dir)) {
+        // The only thing a cell directory ever holds is the empty `root` mountpoint.
+        if (sub !== 'root') throw new Error('unexpected content');
+        rmdirSync(join(dir, sub));
+      }
+      rmdirSync(dir);
+      removed += 1;
+    } catch {
+      skipped += 1;
+    }
+  }
+  return { removed, skipped };
 }

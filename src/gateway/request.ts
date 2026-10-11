@@ -9,6 +9,17 @@ export const DEFAULT_WALL_MS = 10_000;
 export const MAX_WALL_MS = 60_000;
 export const DEFAULT_OUTPUT_KB = 256;
 export const MAX_OUTPUT_KB = 1024;
+// Resource limits (Stage 2). These bounds are constants until the Stage 4 ceiling policy exists.
+export const DEFAULT_MEMORY_MB = 512;
+export const MAX_MEMORY_MB = 2048;
+export const DEFAULT_PIDS = 128;
+export const MAX_PIDS = 512;
+export const DEFAULT_CPU_PERCENT = 100;
+export const MAX_CPU_PERCENT = 400;
+export const DEFAULT_CPU_MS = 10_000;
+export const MAX_CPU_MS = 300_000;
+export const DEFAULT_DISK_MB = 16;
+export const MAX_DISK_MB = 256;
 const MAX_ENV_ENTRIES = 32;
 const MAX_ENV_BYTES = 8 * 1024;
 const MAX_ARG_BYTES = 4095; // the launch spec stores a NUL after each string within 4096 bytes
@@ -31,8 +42,21 @@ const requestSchema = z.strictObject({
     .strictObject({
       wall_ms: z.number().int().min(1).max(MAX_WALL_MS).default(DEFAULT_WALL_MS),
       output_kb: z.number().int().min(1).max(MAX_OUTPUT_KB).default(DEFAULT_OUTPUT_KB),
+      memory_mb: z.number().int().min(1).max(MAX_MEMORY_MB).default(DEFAULT_MEMORY_MB),
+      pids: z.number().int().min(1).max(MAX_PIDS).default(DEFAULT_PIDS),
+      cpu_percent: z.number().int().min(1).max(MAX_CPU_PERCENT).default(DEFAULT_CPU_PERCENT),
+      cpu_ms: z.number().int().min(1).max(MAX_CPU_MS).default(DEFAULT_CPU_MS),
+      disk_mb: z.number().int().min(1).max(MAX_DISK_MB).default(DEFAULT_DISK_MB),
     })
-    .default({ wall_ms: DEFAULT_WALL_MS, output_kb: DEFAULT_OUTPUT_KB }),
+    .default({
+      wall_ms: DEFAULT_WALL_MS,
+      output_kb: DEFAULT_OUTPUT_KB,
+      memory_mb: DEFAULT_MEMORY_MB,
+      pids: DEFAULT_PIDS,
+      cpu_percent: DEFAULT_CPU_PERCENT,
+      cpu_ms: DEFAULT_CPU_MS,
+      disk_mb: DEFAULT_DISK_MB,
+    }),
 });
 
 export interface RunRequest {
@@ -42,6 +66,11 @@ export interface RunRequest {
   readonly env: ReadonlyMap<string, string>;
   readonly wallMs: number;
   readonly outputBytes: number;
+  readonly memoryMb: number;
+  readonly pids: number;
+  readonly cpuPercent: number;
+  readonly cpuMs: number;
+  readonly diskMb: number;
 }
 
 function invalid(context: string): Result<never> {
@@ -100,5 +129,10 @@ export function parseRunRequest(input: Buffer | string): Result<RunRequest> {
     env,
     wallMs: data.limits.wall_ms,
     outputBytes: data.limits.output_kb * 1024,
+    memoryMb: data.limits.memory_mb,
+    pids: data.limits.pids,
+    cpuPercent: data.limits.cpu_percent,
+    cpuMs: data.limits.cpu_ms,
+    diskMb: data.limits.disk_mb,
   });
 }

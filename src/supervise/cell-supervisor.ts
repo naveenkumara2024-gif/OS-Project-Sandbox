@@ -1,10 +1,15 @@
 import { spawn } from 'node:child_process';
 import { Duplex, type Readable, type Writable } from 'node:stream';
+import type { SupervisorKill } from '../collect/classify.js';
 import { CappedBuffer } from '../util/capped-buffer.js';
 import { err, errFromException, ok, type Result } from '../util/result.js';
 
 // Host-side supervision of one `aegis-cell boot` (CLAUDE.md 5.2): one event loop, timers, bounded
 // readers. Descriptor layout is fixed (native/src/boot.c): 3 spec in, 4 status out, 5 control in.
+
+/** What the supervisor's poll hook can ask for. */
+export type PollVerdict =
+  { readonly kind: 'timeout'; readonly clock: 'cpu' } | { readonly kind: 'pids_limit' };
 
 export interface SuperviseOptions {
   /** Absolute path of aegis-cell. */
@@ -15,14 +20,21 @@ export interface SuperviseOptions {
   readonly maxOutputBytes: number;
   /** How long the helper gets to act on the kill request before it is SIGKILLed itself. */
   readonly graceMs?: number;
+  /** Descriptor 6: the cell's cgroup directory (CLONE_INTO_CGROUP). Absent in Stage 1 style runs. */
+  readonly cgroupFd?: number;
+  /** Called every `pollMs`; a verdict makes the supervisor kill the cell for that reason. */
+  readonly poll?: () => PollVerdict | null;
+  readonly pollMs?: number;
+  /** Kills every process in the cell directly (cgroup.kill); the helper kill stays as a backstop. */
+  readonly killCell?: () => void;
 }
 
 export interface SuperviseOutcome {
   readonly stdout: Buffer;
   readonly stderr: Buffer;
   readonly status: string;
-  readonly timedOut: boolean;
-  readonly outputLimit: 'stdout' | 'stderr' | null;
+  /** What the supervisor itself did to end the run, if anything. */
+  readonly killedFor: SupervisorKill | null;
   readonly helperExitCode: number | null;
   readonly helperSignal: NodeJS.Signals | null;
   readonly wallMs: number;
@@ -44,7 +56,15 @@ export function superviseCell(opts: SuperviseOptions): Promise<Result<SuperviseO
         shell: false,
         // The helper needs no environment, and nothing of ours is passed on (CLAUDE.md 6.1 item 5).
         env: {},
-        stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
+        stdio: [
+          'ignore',
+          'pipe',
+          'pipe',
+          'pipe',
+          'pipe',
+          'pipe',
+          ...(opts.cgroupFd === undefined ? [] : [opts.cgroupFd]),
+        ],
         windowsHide: true,
       });
     } catch (e) {
@@ -75,8 +95,7 @@ export function superviseCell(opts: SuperviseOptions): Promise<Result<SuperviseO
     const stdout = new CappedBuffer(opts.maxOutputBytes);
     const stderr = new CappedBuffer(opts.maxOutputBytes);
     const status = new CappedBuffer(STATUS_CAP);
-    let timedOut = false;
-    let outputLimit: 'stdout' | 'stderr' | null = null;
+    let killedFor: SupervisorKill | null = null;
     let killRequested = false;
     let settled = false;
     let graceTimer: NodeJS.Timeout | null = null;
@@ -91,6 +110,9 @@ export function superviseCell(opts: SuperviseOptions): Promise<Result<SuperviseO
     const requestKill = (): void => {
       if (killRequested) return;
       killRequested = true;
+      // cgroup.kill first: it ends init and everything it spawned in one step, however they
+      // behave. The helper's own kill below is the backstop if that write is unavailable.
+      opts.killCell?.();
       if (!controlStream.destroyed && controlStream.writable) {
         controlStream.write('K');
       }
@@ -100,10 +122,21 @@ export function superviseCell(opts: SuperviseOptions): Promise<Result<SuperviseO
       }, grace);
     };
 
-    const wallTimer = setTimeout(() => {
-      timedOut = true;
+    const kill = (why: SupervisorKill): void => {
+      killedFor ??= why;
       requestKill();
+    };
+
+    const wallTimer = setTimeout(() => {
+      kill({ kind: 'timeout', clock: 'wall' });
     }, opts.wallMs);
+    const pollTimer =
+      opts.poll === undefined
+        ? null
+        : setInterval(() => {
+            const v = opts.poll?.() ?? null;
+            if (v !== null) kill(v);
+          }, opts.pollMs ?? 25);
     const hardTimer = setTimeout(
       () => {
         child.kill('SIGKILL');
@@ -112,15 +145,13 @@ export function superviseCell(opts: SuperviseOptions): Promise<Result<SuperviseO
     );
 
     out.on('data', (chunk: Buffer) => {
-      if (!stdout.push(chunk) && outputLimit === null) {
-        outputLimit = 'stdout';
-        requestKill();
+      if (!stdout.push(chunk)) {
+        kill({ kind: 'output_limit', stream: 'stdout' });
       }
     });
     errStream.on('data', (chunk: Buffer) => {
-      if (!stderr.push(chunk) && outputLimit === null) {
-        outputLimit = 'stderr';
-        requestKill();
+      if (!stderr.push(chunk)) {
+        kill({ kind: 'output_limit', stream: 'stderr' });
       }
     });
     statusStream.on('data', (chunk: Buffer) => {
@@ -132,6 +163,7 @@ export function superviseCell(opts: SuperviseOptions): Promise<Result<SuperviseO
       settled = true;
       clearTimeout(wallTimer);
       clearTimeout(hardTimer);
+      if (pollTimer !== null) clearInterval(pollTimer);
       if (graceTimer !== null) clearTimeout(graceTimer);
       resolve(errFromException(e, 'spawn aegis-cell'));
     });
@@ -141,14 +173,14 @@ export function superviseCell(opts: SuperviseOptions): Promise<Result<SuperviseO
       settled = true;
       clearTimeout(wallTimer);
       clearTimeout(hardTimer);
+      if (pollTimer !== null) clearInterval(pollTimer);
       if (graceTimer !== null) clearTimeout(graceTimer);
       resolve(
         ok({
           stdout: stdout.toBuffer(),
           stderr: stderr.toBuffer(),
           status: status.toBuffer().toString('utf8'),
-          timedOut,
-          outputLimit,
+          killedFor,
           helperExitCode: code,
           helperSignal: signal,
           wallMs: Math.round(performance.now() - started),
