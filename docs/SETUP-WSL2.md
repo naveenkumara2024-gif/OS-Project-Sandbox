@@ -1,8 +1,8 @@
 # WSL2 setup
 
 One-time setup performed by the owner. Claude never runs `sudo` or changes system configuration
-(CLAUDE.md 6.6). Everything here is for Stage 0; later stages add systemd and cgroup delegation
-steps to this file when they need them.
+(CLAUDE.md 6.6). Sections 1 to 7 are Stage 0, section 8 is Stage 1; later stages add systemd and
+cgroup delegation steps to this file when they need them.
 
 ## 1. Requirements
 
@@ -82,6 +82,32 @@ Also run the build with the other compiler: `node scripts/build-native.mjs all -
 Paste the output of the commands above, in particular the full `aegis probe` JSON, the `file`/`ldd`
 lines, and any failure. Claude records them verbatim in `docs/reports/stage-0.md`; nothing is marked
 verified until real output exists.
+
+## 8. Stage 1: running a cell
+
+Stage 1 needs no new system packages, no `sudo` and no WSL configuration. It needs unprivileged
+user namespaces, which the Stage 0 probe reports as `native.unshare_newuser: true` on a working
+machine.
+
+```bash
+npm ci --ignore-scripts
+node scripts/build-native.mjs all          # release (static-pie) and debug-asan helpers
+npm run check                              # includes the integration and escape tests
+npm run build
+echo '{"id":"demo","command":["/usr/bin/echo","hi"]}' | node dist/main.js run
+```
+
+`npm run check` runs real cells, so it fails (it is never skipped) if the helper is not built or the
+kernel refuses a namespace. Fuzz the launch-spec parser (needs `libclang-rt-<N>-dev`, see section 2):
+
+```bash
+node scripts/build-native.mjs fuzz --cc=clang
+mkdir -p /tmp/spec-corpus && cp tests/fuzz/corpus/spec/* /tmp/spec-corpus/
+./native/build/fuzz/fuzz-spec -max_total_time=300 -max_len=70000 /tmp/spec-corpus
+```
+
+**Until Stage 4, do not run untrusted code outside the test fixtures.** The Stage 1 cell has
+namespace-local capabilities and exposes the host's `/usr` read-only (prompt section 4.9).
 
 ## Environment variables
 
