@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { diffCopyResult, diffOverlayUpper } from '../../src/collect/diff.js';
+import { diffCopyResult, diffOverlayUpper, treeBytes } from '../../src/collect/diff.js';
 
 let base = '';
 beforeEach(() => {
@@ -89,5 +89,17 @@ describe('diffCopyResult', () => {
     expect(byPath.get('changed.txt')?.op).toBe('modify');
     expect(byPath.get('added.txt')?.op).toBe('add');
     expect(byPath.has('same.txt')).toBe(false);
+  });
+});
+
+describe('treeBytes', () => {
+  it('sums regular files, counts a symlink as nothing, and stops early past the cap', () => {
+    const d = mk('tree');
+    writeFileSync(join(d, 'a'), 'x'.repeat(100));
+    mkdirSync(join(d, 'sub'));
+    writeFileSync(join(d, 'sub', 'b'), 'y'.repeat(50));
+    symlinkSync('/etc/passwd', join(d, 'link'));
+    expect(treeBytes(d, 1_000_000)).toBe(150);
+    expect(treeBytes(d, 10)).toBeGreaterThan(10);
   });
 });

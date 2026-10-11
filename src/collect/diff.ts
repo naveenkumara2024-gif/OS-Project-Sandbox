@@ -193,3 +193,35 @@ export function diffCopyResult(lowerDir: string, resultDir: string): Result<Chan
   }
   return ok(changes.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)));
 }
+
+/**
+ * Total size in bytes of the regular files under `root`, by lstat only (no symlink is followed).
+ * Used by the supervisor to cap the workspace's upper layer; returns early once `stopAfter` is
+ * exceeded so a huge tree does not make every poll expensive.
+ */
+export function treeBytes(root: string, stopAfter: number): number {
+  let total = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    if (dir === undefined) break;
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      continue; // e.g. the kernel's mode-0000 work/work, which is not under upper anyway
+    }
+    for (const name of names) {
+      const full = join(dir, name);
+      try {
+        const st = lstatSync(full);
+        if (st.isDirectory()) stack.push(full);
+        else if (st.isFile()) total += st.size;
+      } catch {
+        // Vanished between listing and stat.
+      }
+      if (total > stopAfter) return total;
+    }
+  }
+  return total;
+}

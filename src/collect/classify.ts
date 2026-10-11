@@ -7,7 +7,8 @@ import type { StatusRecord } from '../sys/status.js';
 export type SupervisorKill =
   | { readonly kind: 'timeout'; readonly clock: 'wall' | 'cpu' }
   | { readonly kind: 'output_limit'; readonly stream: 'stdout' | 'stderr' }
-  | { readonly kind: 'pids_limit' };
+  | { readonly kind: 'pids_limit' }
+  | { readonly kind: 'disk_limit'; readonly path: string };
 
 export type Termination =
   | { readonly cause: 'exit' }
@@ -80,6 +81,7 @@ export function classify(f: Facts): Classified {
   const k = f.supervisorKill;
   if (k?.kind === 'timeout') limitsHit.push(k.clock === 'cpu' ? 'cpu' : 'wall');
   if (k?.kind === 'output_limit') limitsHit.push('output');
+  if (k?.kind === 'disk_limit') limitsHit.push('disk');
 
   // An output or pids kill can only come from a payload that is running, even when init was
   // killed before it could write its `started` record (a fast flooder can reach the cap in the
@@ -87,7 +89,8 @@ export function classify(f: Facts): Classified {
   const started =
     f.records.some((r) => r.kind === 'started') ||
     k?.kind === 'output_limit' ||
-    k?.kind === 'pids_limit';
+    k?.kind === 'pids_limit' ||
+    k?.kind === 'disk_limit';
   if (!started && k?.kind === 'timeout') {
     // The supervisor ended the cell before the payload got going (a very short limit, a loaded
     // machine). Any layer failure records are then consequences of that kill, not causes.
@@ -129,6 +132,9 @@ export function classify(f: Facts): Classified {
       return { termination: { cause: 'timeout', clock: k.clock }, exitCode, limitsHit };
     if (k.kind === 'output_limit') {
       return { termination: { cause: 'output_limit', stream: k.stream }, exitCode, limitsHit };
+    }
+    if (k.kind === 'disk_limit') {
+      return { termination: { cause: 'disk_limit', path: k.path }, exitCode, limitsHit };
     }
     return { termination: { cause: 'pids_limit' }, exitCode, limitsHit };
   }

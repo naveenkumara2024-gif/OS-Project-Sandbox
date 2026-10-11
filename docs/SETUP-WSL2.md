@@ -1,7 +1,7 @@
 # WSL2 setup
 
 One-time setup performed by the owner. Claude never runs `sudo` or changes system configuration
-(CLAUDE.md 6.6). Sections 1 to 7 are Stage 0, section 8 is Stage 1, section 9 is Stage 2; later
+(CLAUDE.md 6.6). Sections 1 to 7 are Stage 0, section 8 is Stage 1, section 9 is Stage 2, section 10 is Stage 3; later
 stages add their own steps to this file when they need them.
 
 ## 1. Requirements
@@ -139,10 +139,34 @@ Cell cgroups live under `user@1000.service/aegis-cells/cell-<pid>-<id>` and are 
 run; leftovers from a crashed engine are removed by the reaper at the next `aegis run`. To look by
 hand: `ls /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/aegis-cells`.
 
+## 10. Stage 3: workspaces, commit and discard
+
+No new system packages, no `sudo`: `rsync` and `wslpath` are already present, and unprivileged
+overlayfs works inside a cell on this kernel (the Stage 3 report records the measurement).
+
+Host directories are only ever ingested from roots you list in `policy.default.json`
+(`ingest_roots`), which the engine reads and never writes; `commit_roots` (defaults to
+`ingest_roots`) lists where `aegis commit` may write. Both start empty, so nothing is allowed until
+you add a path. Set `AEGIS_POLICY_FILE` to use another file (for tests).
+
+```bash
+# run with a workspace (host directory) and inline files; the response carries `changes`
+systemd-run --user --scope --quiet --collect -- node dist/main.js run --file request.json
+# review, then write only the paths you approve; a git hook or a symlink is always refused
+node dist/main.js commit <run-id> --dest <allowed root> [--paths a.txt,sub/b.txt]
+# or throw the cell's changes away without touching the project
+node dist/main.js discard <run-id>
+```
+
+A run's workspace lives in `$TMPDIR/aegis-workspace-<run-id>` until `commit`/`discard` (Stage 5
+adds sessions and idle expiry). A deletion in the change list is reported by `commit`, never
+applied automatically.
+
 ## Environment variables
 
 | Variable | Effect |
 | --- | --- |
 | `AEGIS_CELL_BIN` | Absolute path of the helper, overriding `native/build/release/aegis-cell`. The chosen path and its source appear in the probe output. |
 | `AEGIS_CC` | Compiler used by `scripts/build-native.mjs` (default `cc`; `--cc=` wins). |
+| `AEGIS_POLICY_FILE` | Absolute path of the policy file, overriding `policy.default.json` at the repository root. |
 | `AEGIS_NO_SCOPE` | `1` makes `scripts/run-in-scope.mjs` run its command directly instead of through `systemd-run --user --scope`. |

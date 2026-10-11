@@ -9,7 +9,9 @@ import { err, errFromException, ok, type Result } from '../util/result.js';
 
 /** What the supervisor's poll hook can ask for. */
 export type PollVerdict =
-  { readonly kind: 'timeout'; readonly clock: 'cpu' } | { readonly kind: 'pids_limit' };
+  | { readonly kind: 'timeout'; readonly clock: 'cpu' }
+  | { readonly kind: 'pids_limit' }
+  | { readonly kind: 'disk_limit'; readonly path: string };
 
 export interface SuperviseOptions {
   /** Absolute path of aegis-cell. */

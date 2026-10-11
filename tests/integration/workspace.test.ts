@@ -5,6 +5,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -116,6 +117,31 @@ describe.each(helperBuilds())('workspace ($name build)', (helper) => {
       expect(r.stdout).toBe('');
     } finally {
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('caps what the program may write into the workspace and classifies it disk_limit', async () => {
+    for (const forceCopy of [false, true]) {
+      const t0 = Date.now();
+      const r = await runWith(
+        helper,
+        uniqueRequest(
+          [
+            '/usr/bin/sh',
+            '-c',
+            'i=0; while [ $i -lt 4000 ]; do head -c 65536 /dev/zero >> big.bin; i=$((i+1)); done',
+          ],
+          { files: [{ path: 'seed.txt', content: 'x' }], limits: { disk_mb: 4, wall_ms: 20000 } },
+        ),
+        { workspaceParent: wsParent, forceCopyWorkspace: forceCopy },
+      );
+      expect(r.termination, JSON.stringify(r)).toEqual({ cause: 'disk_limit', path: '/workspace' });
+      expect(r.limits_hit).toContain('disk');
+      expect(Date.now() - t0).toBeLessThan(10000);
+      const big = join(wsParent, `aegis-workspace-${r.id}`, 'rw', 'upper', 'big.bin');
+      // Polling bounds it, it does not make it exact: allow a generous overshoot, but nowhere
+      // near the 256 MB the loop would write unchecked.
+      expect(statSync(big).size).toBeLessThan(64 * 1024 * 1024);
     }
   });
 

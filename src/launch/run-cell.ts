@@ -11,7 +11,7 @@ import {
   type Termination,
 } from '../collect/classify.js';
 import type { RunRequest } from '../gateway/request.js';
-import { diffCopyResult, diffOverlayUpper, type Change } from '../collect/diff.js';
+import { diffCopyResult, diffOverlayUpper, treeBytes, type Change } from '../collect/diff.js';
 import {
   resolveIngestSource,
   rsyncIngest,
@@ -291,9 +291,17 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
 
   // 3. Run, watching the kernel counters the receipt will quote.
   const cpuBudgetUs = req.cpuMs * 1000;
+  // The host-backed upper layer is not a size-capped tmpfs, so it is capped here by polling:
+  // `disk_mb` bounds what the program may change in the workspace, same as it bounds /tmp. The
+  // overshoot is at most what can be written in one poll interval.
+  const upperCapBytes = req.diskMb * 1024 * 1024;
+  const upperDir = workspacePaths?.upper ?? null;
   const poll = (): PollVerdict | null => {
     if (cell.pidsMaxHits() > 0) return { kind: 'pids_limit' };
     if (cell.cpuUsageUs() > cpuBudgetUs) return { kind: 'timeout', clock: 'cpu' };
+    if (upperDir !== null && treeBytes(upperDir, upperCapBytes) > upperCapBytes) {
+      return { kind: 'disk_limit', path: '/workspace' };
+    }
     return null;
   };
   const ran = await superviseCell({
