@@ -1,0 +1,7 @@
+node_modules/
+dist/
+native/build/
+coverage/
+*.log
+.env
+.env.*

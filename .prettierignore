@@ -1,0 +1,7 @@
+dist/
+node_modules/
+native/build/
+coverage/
+package-lock.json
+*.md
+*.docx
