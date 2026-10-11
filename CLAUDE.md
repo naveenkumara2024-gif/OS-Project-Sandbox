@@ -44,7 +44,7 @@ At session start, if any row says `implement` (and no approved prompt exists for
 4. **Present** the prompt to the owner in chat: a short summary (goal, scope, files, risks, privileged actions, acceptance gate) plus the file path. Ask for approval explicitly.
 5. **STOP.** Do not create or edit any file outside `docs/prompts/` and `docs/STAGES.md`. Do not install packages. Do not run builds "to check". Wait.
 6. **If the owner requests changes**, revise the prompt, keep `status: draft`, present the changes, and wait again.
-7. **On approval**, compute `sha256sum` of the prompt file, record `status: approved`, `approved_at` (ISO date) and `approved_sha256` in its front matter, set the stage to `approved`, then `in-progress`, and begin implementation.
+7. **On approval**, compute `sha256sum` of the prompt file, record `status: approved`, `approved_at` (ISO date) and `approved_sha256` in its front matter, set the stage to `approved`, then `in-progress`. **Create the stage branch `stage/<N>-<slug>` (section 10) and check it out before writing any implementation file**, then begin implementation.
 
 ### 0.4 What counts as approval
 
@@ -68,10 +68,21 @@ All of the following, otherwise the stage stays `verifying`:
 4. Docs updated (`docs/` and, if the design changed, an ADR).
 5. A stage report exists at `docs/reports/stage-<N>.md`: what changed, commands run, **actual measured results**, deviations from the prompt, known limitations, open questions.
 6. `docs/STAGES.md` updated to `done`.
+7. **Everything is committed on the stage's own branch `stage/<N>-<slug>`** (section 10): the working tree is clean, the branch tip builds and passes the checks in item 2, and the report records the branch name and the final commit hash. A stage is not `done` while its work is uncommitted or sitting on another branch.
 
 ### 0.7 Optional hard enforcement
 
 This file is advisory. If the owner wants deterministic enforcement, add a Claude Code `PreToolUse` hook that exits with code 2 for `Write` or `Edit` calls outside `docs/` unless the active stage in `docs/STAGES.md` is `approved` or `in-progress`. Claude should offer to write it but not install it without approval.
+
+### 0.8 Fixes after a stage is done
+
+When the owner reports a problem, or wants a change, in a stage that is already `done`:
+
+1. Set the stage back to `in-progress` in `docs/STAGES.md` and log why. Check out that stage's branch `stage/<N>-<slug>`. **The fix is never made on another stage's branch or on `main`.**
+2. Keep the fix inside that stage's approved scope. If it needs something the approved prompt did not cover, follow 0.5 (amendment, re-approval).
+3. Fix it, re-run the stage's verification (0.6 item 2), and commit on the same branch with a `fix(stage-<N>):` commit that says what broke and why.
+4. Append a "Fixes after done" entry to `docs/reports/stage-<N>.md` (issue, cause, change, commands run, measured result, commit hash), then set the stage back to `done`.
+5. If a later stage's work uncovers a bug in an earlier stage, stop and tell the owner; the fix belongs on the earlier stage's branch, and the owner decides how it reaches later branches.
 
 ---
 
@@ -398,9 +409,13 @@ Anything that needs a decision before work starts.
 
 ## 10. Git and repository workflow
 
-- One branch per stage: `stage/<N>-<slug>`. Commit small, logical units. Conventional commits (`feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `chore:`), imperative mood, body explaining why when non-obvious.
-- Never commit a failing build. Never commit secrets, local paths or machine-specific config. `node_modules/`, `dist/` and native build output are ignored; `package-lock.json` is committed.
-- Do not push, merge, rebase published history or delete branches without being asked. When a stage is `done`, summarise and let the owner decide about merging.
+- **One branch per stage: `stage/<N>-<slug>`**, created at approval (0.3 step 7) and used for everything that belongs to that stage: implementation, tests, docs, the report, and every later fix (0.8). Nothing from a stage is committed to `main` or to another stage's branch.
+- **Standing authorization:** the owner authorises Claude to make local commits on the active stage branch without asking each time. Committing is part of finishing a stage (0.6 item 7). This does not extend to pushing, merging or any other git operation below.
+- Branch base: `main` for Stage 0; for later stages, the tip of the previous stage's branch unless the owner has merged it, in which case `main`. The report states the base commit.
+- Commit small, logical units as the work progresses, not one large commit at the end. Conventional commits (`feat:`, `fix:`, `test:`, `docs:`, `refactor:`, `chore:`), scope `(stage-<N>)`, imperative mood, body explaining why when non-obvious. The last commit of a stage contains the report and the `done` state in `docs/STAGES.md`.
+- Before every commit, check `git status` and `git diff --staged`; stage files by name, never `git add -A`. Never commit a failing build. Never commit secrets, local paths or machine-specific config. `node_modules/`, `dist/` and native build output are ignored; `package-lock.json` is committed.
+- If the directory is not a git repository, ask the owner before `git init`. The baseline commit (`CLAUDE.md`, `docs/`) goes on `main`, and each stage branch starts from it.
+- Do not push, merge, rebase, amend published history or delete branches without being asked. When a stage is `done`, summarise (branch name, commit list, report path) and let the owner decide about merging.
 - Decisions that change the blueprint go in `docs/adr/NNNN-title.md` (context, decision, consequences). Update `docs/BLUEPRINT.md` only when the owner asks, and list proposed edits in the stage report.
 
 ---
@@ -425,7 +440,10 @@ Anything that needs a decision before work starts.
 | Prompt drafted, no explicit approval | Do nothing outside `docs/prompts/` and `docs/STAGES.md` |
 | Owner approves | Hash the prompt, record approval, begin work |
 | Work needs something outside the approved prompt | Stop, add an amendment, re-request approval |
-| Stage complete | Verify, write report, set `done`, wait |
+| Owner approves | (see above) and create branch `stage/<N>-<slug>` before the first implementation file |
+| Stage complete | Verify, write report, commit everything on `stage/<N>-<slug>`, set `done`, wait |
+| Owner reports a bug or wants a change in a done stage | Set stage `in-progress`, check out its branch, fix, re-verify, commit `fix(stage-<N>):` on the same branch, amend the report, set `done` (0.8) |
+| Bug found in an earlier stage while on a later one | Stop and tell the owner; the fix goes on the earlier stage's branch |
 | Destructive probe needed | Only via the harness against the disposable fixture |
 | Needs `sudo` or system change | Ask; never run it |
 | Needs a kernel interface Node cannot reach | Put it in `aegis-cell`, justify in the stage prompt |
