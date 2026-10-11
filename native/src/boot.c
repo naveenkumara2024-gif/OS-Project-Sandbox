@@ -713,11 +713,18 @@ int aegis_boot_run(void)
     close(exec_pipe[1]);
     g_exec_pipe_w = -1;
 
-    char go = 'G';
+    const char go = 'G';
     int map_err = write_id_maps(pid, host_uid, host_gid);
     if (map_err != 0) {
-        go = 'N';
+        /* The child is still blocked on the sync pipe and holds no payload code. Report, kill it,
+         * reap it, and stop: an exec pipe at EOF must never be read as "payload started". */
         status_layer("idmap", 0, map_err);
+        kill_cell(pidfd);
+        pid_t reaped;
+        do {
+            reaped = waitpid((pid_t)pid, NULL, 0);
+        } while (reaped < 0 && errno == EINTR);
+        return EXIT_NOT_ESTABLISHED;
     }
     ssize_t w;
     do {
@@ -769,6 +776,22 @@ int aegis_boot_run(void)
         }
         if (fds[0].revents != 0) {
             done = 1;
+        }
+    }
+
+    /* The child has exited, so its end of the exec pipe is closed and this read cannot block. It
+     * settles the case where exit and exec-pipe EOF were not seen in the same poll round. */
+    if (exec_state == 0 && fds[2].fd >= 0) {
+        char b;
+        ssize_t n;
+        do {
+            n = read(fds[2].fd, &b, 1);
+        } while (n < 0 && errno == EINTR);
+        if (n > 0) {
+            exec_state = 2;
+        } else if (n == 0) {
+            exec_state = 1;
+            status_num("started", pid);
         }
     }
 

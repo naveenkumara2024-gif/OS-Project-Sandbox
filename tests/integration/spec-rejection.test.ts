@@ -33,7 +33,22 @@ function withBytes(mutate: (b: Buffer) => void): Buffer {
   return b;
 }
 
+/** A spec the encoder would refuse, made by patching the bytes of a valid one. */
+function withOutsideSource(): Buffer {
+  const r = encodeLaunchSpec({
+    ...valid,
+    entries: [{ kind: 'bind-dir', src: '/usr/bin', tgt: '/usr/bin' }],
+  });
+  if (!r.ok) throw new Error(r.error.context);
+  const b = Buffer.from(r.value);
+  const at = b.indexOf('/usr/bin\0/usr/bin\0', 0, 'latin1');
+  if (at < 0) throw new Error('entry not found');
+  b.write('/etc/bin', at, 'latin1'); // the bind source, now outside /usr
+  return b;
+}
+
 const cases: [string, Buffer][] = [
+  ['a bind source outside /usr', withOutsideSource()],
   ['empty input', Buffer.alloc(0)],
   ['wrong magic', withBytes((b) => void b.write('NOPE', 0, 'latin1'))],
   ['wrong version', withBytes((b) => void b.writeUInt16LE(2, 4))],

@@ -61,6 +61,16 @@ static int check_abs_path(const char *s)
     return 0;
 }
 
+/* The cell's tree is the host's /usr and nothing else (Amendment 1): bind sources, targets and
+ * masks must be /usr or below it. Defence in depth: the encoder already guarantees it. */
+static int check_under_usr(const char *s)
+{
+    if (strncmp(s, "/usr", 4) != 0 || (s[4] != '\0' && s[4] != '/')) {
+        return AEGIS_SPEC_E_PATH;
+    }
+    return 0;
+}
+
 static int parse_entry(const uint8_t *p, size_t len, aegis_root_entry_t *e)
 {
     if (len < 5U) {
@@ -96,11 +106,17 @@ static int parse_entry(const uint8_t *p, size_t len, aegis_root_entry_t *e)
         }
     } else {
         rc = check_abs_path(src);
+        if (rc == 0) {
+            rc = check_under_usr(src);
+        }
         if (rc != 0) {
             return rc;
         }
     }
     rc = check_abs_path(tgt);
+    if (rc == 0) {
+        rc = check_under_usr(tgt);
+    }
     if (rc != 0) {
         return rc;
     }
@@ -247,6 +263,9 @@ int aegis_spec_parse(const uint8_t *buf, size_t len, aegis_spec_t *out)
                 return rc;
             }
             rc = check_abs_path(s);
+            if (rc == 0) {
+                rc = check_under_usr(s);
+            }
             if (rc != 0) {
                 return rc;
             }

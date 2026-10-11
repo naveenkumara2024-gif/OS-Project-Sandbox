@@ -76,6 +76,11 @@ export function isCleanAbsolutePath(path: string): boolean {
   return parts.every((p) => p !== '' && p !== '.' && p !== '..');
 }
 
+/** The cell's tree is the host's /usr and nothing else (Amendment 1 of the Stage 1 prompt). */
+export function isUnderUsr(path: string): boolean {
+  return path === '/usr' || path.startsWith('/usr/');
+}
+
 function stringBytes(s: string): Buffer | null {
   if (s.includes('\0')) {
     return null;
@@ -185,12 +190,12 @@ export function encodeLaunchSpec(spec: LaunchSpec): Result<Uint8Array> {
     if (src === null || tgt === null) {
       return badSpec('root entry string is too long or contains NUL');
     }
-    if (!isCleanAbsolutePath(e.tgt)) {
-      return badSpec('root entry target is not a clean absolute path');
+    if (!isCleanAbsolutePath(e.tgt) || !isUnderUsr(e.tgt)) {
+      return badSpec('root entry target is not a clean absolute path under /usr');
     }
     if (e.kind === 'bind-dir' || e.kind === 'bind-file') {
-      if (!isCleanAbsolutePath(e.src)) {
-        return badSpec('root entry source is not a clean absolute path');
+      if (!isCleanAbsolutePath(e.src) || !isUnderUsr(e.src)) {
+        return badSpec('root entry source is not a clean absolute path under /usr');
       }
     } else if (e.kind === 'mkdir') {
       if (e.src !== '') {
@@ -206,12 +211,12 @@ export function encodeLaunchSpec(spec: LaunchSpec): Result<Uint8Array> {
     w.record(KEY.rootEntry, Buffer.concat([head, src, tgt]));
   }
   for (const m of spec.maskFiles) {
-    if (!isCleanAbsolutePath(m)) return badSpec('mask path is not a clean absolute path');
+    if (!isCleanAbsolutePath(m) || !isUnderUsr(m)) return badSpec('mask path is not under /usr');
     const r2 = str(KEY.maskFile, m, 'mask path');
     if (!r2.ok) return r2;
   }
   for (const m of spec.maskDirs) {
-    if (!isCleanAbsolutePath(m)) return badSpec('mask path is not a clean absolute path');
+    if (!isCleanAbsolutePath(m) || !isUnderUsr(m)) return badSpec('mask path is not under /usr');
     const r2 = str(KEY.maskDir, m, 'mask path');
     if (!r2.ok) return r2;
   }

@@ -67,6 +67,16 @@ describe('launch spec encoder', () => {
     ['mkdir with a source', { ...base, entries: [{ kind: 'mkdir', src: '/x', tgt: '/usr' }] }],
     ['empty symlink text', { ...base, entries: [{ kind: 'symlink', src: '', tgt: '/usr/x' }] }],
     ['relative mask', { ...base, maskFiles: ['usr/bin/node'] }],
+    ['mask outside /usr', { ...base, maskFiles: ['/etc/passwd'] }],
+    [
+      'bind source outside /usr',
+      { ...base, entries: [{ kind: 'bind-dir', src: '/etc', tgt: '/usr/etc' }] },
+    ],
+    [
+      'bind source that only looks like /usr',
+      { ...base, entries: [{ kind: 'bind-dir', src: '/usrx/bin', tgt: '/usr/bin' }] },
+    ],
+    ['target outside /usr', { ...base, entries: [{ kind: 'mkdir', src: '', tgt: '/etc' }] }],
   ] as [string, LaunchSpec][])('rejects %s', (_name, spec) => {
     expect(encodeLaunchSpec(spec).ok).toBe(false);
   });
@@ -101,7 +111,7 @@ describe('launch spec encoder', () => {
 
   it('round-trips arbitrary valid specs and always stays under the cap', () => {
     const seg = fc.stringMatching(/^[A-Za-z0-9_-]{1,12}$/);
-    const path = fc.array(seg, { minLength: 1, maxLength: 4 }).map((p) => `/${p.join('/')}`);
+    const path = fc.array(seg, { minLength: 1, maxLength: 4 }).map((p) => `/usr/${p.join('/')}`);
     const entry: fc.Arbitrary<RootEntry> = fc.oneof(
       path.map((p): RootEntry => ({ kind: 'bind-dir', src: p, tgt: p })),
       path.map((p): RootEntry => ({ kind: 'bind-file', src: p, tgt: p })),
