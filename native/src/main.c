@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "boot.h"
+#include "init.h"
 #include "probe.h"
 
 #include <string.h>
@@ -23,10 +24,13 @@ int main(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "boot") == 0) {
         return aegis_boot_run();
     }
+    if (argc >= 4 && strcmp(argv[1], "init") == 0 && strcmp(argv[2], "--") == 0) {
+        return aegis_init_run(&argv[3]);
+    }
     if (argc >= 2 && (strcmp(argv[1], "init") == 0 || strcmp(argv[1], "fsop") == 0)) {
         say("aegis-cell: subcommand not implemented yet\n");
         return EXIT_USAGE;
     }
-    say("usage: aegis-cell probe | boot\n");
+    say("usage: aegis-cell probe | boot | init -- <argv...>\n");
     return EXIT_USAGE;
 }

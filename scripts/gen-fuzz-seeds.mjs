@@ -18,6 +18,7 @@ const base = {
   entries: [],
   maskFiles: [],
   maskDirs: [],
+  cgroupFd: false,
 };
 const seeds = {
   minimal: base,
@@ -31,6 +32,7 @@ const seeds = {
     ],
     maskFiles: ['/usr/bin/node'],
     maskDirs: ['/usr/include/node'],
+    cgroupFd: true,
   },
   many_args: {
     ...base,

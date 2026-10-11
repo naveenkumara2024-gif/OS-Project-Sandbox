@@ -1,7 +1,7 @@
 import { err, ok, type Result } from '../util/result.js';
 
-/** Layer names the helper may report (native/src/boot.c). The first eleven are the receipt layers. */
-export const RECEIPT_LAYERS = [
+/** Layers the helper (boot and init) reports after observing them (native/src/boot.c, init.c). */
+export const HELPER_LAYERS = [
   'userns',
   'pidns',
   'mountns',
@@ -13,20 +13,26 @@ export const RECEIPT_LAYERS = [
   'root',
   'proc',
   'dev',
+  'init',
 ] as const;
 
-export type ReceiptLayer = (typeof RECEIPT_LAYERS)[number];
+export type HelperLayer = (typeof HELPER_LAYERS)[number];
 
 /** Pseudo-layers that only ever appear in a failure record. */
-const FAILURE_ONLY = ['spec', 'namespaces', 'idmap', 'exec'] as const;
-const KNOWN_LAYERS = new Set<string>([...RECEIPT_LAYERS, ...FAILURE_ONLY]);
+const FAILURE_ONLY = ['spec', 'namespaces', 'idmap', 'exec', 'cgroup_placement'] as const;
+const KNOWN_LAYERS = new Set<string>([...HELPER_LAYERS, ...FAILURE_ONLY]);
 
 export type StatusRecord =
   | { readonly kind: 'layer'; readonly layer: string; readonly ok: true }
   | { readonly kind: 'layer'; readonly layer: string; readonly ok: false; readonly errno: number }
   | { readonly kind: 'started'; readonly pid: number }
   | { readonly kind: 'exited'; readonly code: number }
-  | { readonly kind: 'signaled'; readonly signal: number };
+  | { readonly kind: 'signaled'; readonly signal: number }
+  /** PID 1's own wait status as seen from outside the cell (not forgeable by the payload). */
+  | { readonly kind: 'cellexit'; readonly code: number }
+  | { readonly kind: 'cellsig'; readonly signal: number }
+  /** A capped tmpfs that was full when the payload ended. */
+  | { readonly kind: 'full'; readonly path: string };
 
 const MAX_RECORDS = 256;
 
@@ -82,6 +88,18 @@ export function parseStatus(text: string): Result<StatusRecord[]> {
       }
       if (n !== null && head === 'signaled') {
         out.push({ kind: 'signaled', signal: n });
+        continue;
+      }
+      if (n !== null && head === 'cellexit') {
+        out.push({ kind: 'cellexit', code: n });
+        continue;
+      }
+      if (n !== null && head === 'cellsig') {
+        out.push({ kind: 'cellsig', signal: n });
+        continue;
+      }
+      if (head === 'full' && (f[1] === '/' || f[1] === '/tmp' || f[1] === '/dev/shm')) {
+        out.push({ kind: 'full', path: f[1] });
         continue;
       }
     }

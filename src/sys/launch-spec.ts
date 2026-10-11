@@ -30,7 +30,11 @@ const KEY = {
   rootEntry: 7,
   maskFile: 8,
   maskDir: 9,
+  cgroupFd: 10,
 } as const;
+
+/** The descriptor number the helper expects the cgroup directory on (native/src/spec.h). */
+export const CGROUP_FD = 6;
 
 const KIND = { 'bind-dir': 1, 'bind-file': 2, symlink: 3, mkdir: 4 } as const;
 const KIND_BY_CODE = new Map<number, RootEntryKind>([
@@ -61,6 +65,8 @@ export interface LaunchSpec {
   readonly entries: readonly RootEntry[];
   readonly maskFiles: readonly string[];
   readonly maskDirs: readonly string[];
+  /** True when the control plane passes a cgroup directory on descriptor 6 (CLONE_INTO_CGROUP). */
+  readonly cgroupFd: boolean;
 }
 
 function badSpec(context: string): Result<never> {
@@ -215,6 +221,11 @@ export function encodeLaunchSpec(spec: LaunchSpec): Result<Uint8Array> {
     const r2 = str(KEY.maskFile, m, 'mask path');
     if (!r2.ok) return r2;
   }
+  if (spec.cgroupFd) {
+    const b = Buffer.alloc(4);
+    b.writeUInt32LE(CGROUP_FD, 0);
+    w.record(KEY.cgroupFd, b);
+  }
   for (const m of spec.maskDirs) {
     if (!isCleanAbsolutePath(m) || !isUnderUsr(m)) return badSpec('mask path is not under /usr');
     const r2 = str(KEY.maskDir, m, 'mask path');
@@ -255,6 +266,7 @@ export function decodeLaunchSpec(bytes: Uint8Array): Result<LaunchSpec> {
   let hostname: string | null = null;
   let rootTmpfsBytes: number | null = null;
   let tmpTmpfsBytes: number | null = null;
+  let cgroupFd = false;
 
   const text = (b: Buffer): string | null => {
     if (b.length < 1 || b[b.length - 1] !== 0 || b.subarray(0, b.length - 1).includes(0)) {
@@ -318,6 +330,12 @@ export function decodeLaunchSpec(bytes: Uint8Array): Result<LaunchSpec> {
         if (s === null) return badSpec('bad mask');
         maskDirs.push(s);
         break;
+      case KEY.cgroupFd:
+        if (body.length !== 4 || body.readUInt32LE(0) !== CGROUP_FD || cgroupFd) {
+          return badSpec('bad cgroup fd record');
+        }
+        cgroupFd = true;
+        break;
       default:
         return badSpec('unknown key');
     }
@@ -341,5 +359,6 @@ export function decodeLaunchSpec(bytes: Uint8Array): Result<LaunchSpec> {
     entries,
     maskFiles,
     maskDirs,
+    cgroupFd,
   });
 }

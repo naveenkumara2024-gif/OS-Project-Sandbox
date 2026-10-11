@@ -1,8 +1,8 @@
 # WSL2 setup
 
 One-time setup performed by the owner. Claude never runs `sudo` or changes system configuration
-(CLAUDE.md 6.6). Sections 1 to 7 are Stage 0, section 8 is Stage 1; later stages add systemd and
-cgroup delegation steps to this file when they need them.
+(CLAUDE.md 6.6). Sections 1 to 7 are Stage 0, section 8 is Stage 1, section 9 is Stage 2; later
+stages add their own steps to this file when they need them.
 
 ## 1. Requirements
 
@@ -109,9 +109,40 @@ mkdir -p /tmp/spec-corpus && cp tests/fuzz/corpus/spec/* /tmp/spec-corpus/
 **Until Stage 4, do not run untrusted code outside the test fixtures.** The Stage 1 cell has
 namespace-local capabilities and exposes the host's `/usr` read-only (prompt section 4.9).
 
+## 9. Stage 2: resource limits need a delegated cgroup
+
+Stage 2 needs **no `sudo` and no system change** on a WSL2 distribution with systemd enabled
+(`[boot] systemd=true` in `/etc/wsl.conf`, which this machine has). It does need the engine to run
+inside the cgroup subtree that systemd's user manager delegates to you:
+
+```bash
+cat /proc/self/cgroup                       # a plain WSL shell shows 0::/init.scope: outside it
+systemd-run --user --scope --quiet --collect -- node dist/main.js run --file request.json
+```
+
+From `/init.scope` the kernel refuses to place a process into your delegated subtree (it needs
+write access to the common ancestor), so `aegis run` returns `isolation_unavailable` with layer
+`cgroup_placement` and this command in the `hint`. It does not fall back to weaker limits.
+
+`npm test` and `npm run check` do this for you through `scripts/run-in-scope.mjs` (set
+`AEGIS_NO_SCOPE=1` to bypass it, for example when you are already in a scope). GitHub's hosted
+runners may not provide a systemd user manager; if they do not, the integration tests fail by
+design rather than skip.
+
+Check what the engine sees, including a real self-test cell and its receipt:
+
+```bash
+systemd-run --user --scope --quiet --collect -- node dist/main.js probe | head -80
+```
+
+Cell cgroups live under `user@1000.service/aegis-cells/cell-<pid>-<id>` and are removed after each
+run; leftovers from a crashed engine are removed by the reaper at the next `aegis run`. To look by
+hand: `ls /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/aegis-cells`.
+
 ## Environment variables
 
 | Variable | Effect |
 | --- | --- |
 | `AEGIS_CELL_BIN` | Absolute path of the helper, overriding `native/build/release/aegis-cell`. The chosen path and its source appear in the probe output. |
 | `AEGIS_CC` | Compiler used by `scripts/build-native.mjs` (default `cc`; `--cc=` wins). |
+| `AEGIS_NO_SCOPE` | `1` makes `scripts/run-in-scope.mjs` run its command directly instead of through `systemd-run --user --scope`. |

@@ -28,6 +28,9 @@
 #define AEGIS_SPEC_MAX_ENTRIES 512U
 #define AEGIS_SPEC_MAX_MASKS 32U
 
+/* Descriptor numbers are fixed by the launch protocol (native/src/boot.h). */
+#define AEGIS_SPEC_CGROUP_FD 6U
+
 #define AEGIS_SPEC_MIN_TMPFS_BYTES (1ULL << 20)
 #define AEGIS_SPEC_MAX_TMPFS_BYTES (1ULL << 30)
 
@@ -40,7 +43,9 @@ enum aegis_spec_key {
     AEGIS_KEY_TMP_TMPFS_BYTES = 6,
     AEGIS_KEY_ROOT_ENTRY = 7,
     AEGIS_KEY_MASK_FILE = 8,
-    AEGIS_KEY_MASK_DIR = 9
+    AEGIS_KEY_MASK_DIR = 9,
+    AEGIS_KEY_CGROUP_FD =
+        10 /* u32, must be 6: a cgroup directory fd is passed for CLONE_INTO_CGROUP */
 };
 
 enum aegis_root_kind {
@@ -86,6 +91,7 @@ typedef struct {
     size_t nmask_files;
     const char *mask_dirs[AEGIS_SPEC_MAX_MASKS];
     size_t nmask_dirs;
+    int has_cgroup_fd; /* the control plane passed a cgroup directory on descriptor 6 */
 } aegis_spec_t;
 
 /* Returns 0 on success or a negative enum aegis_spec_error value. */
