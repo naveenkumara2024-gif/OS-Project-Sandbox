@@ -26,7 +26,34 @@ struct aegis_open_how {
 /* landlock_create_ruleset(2) LANDLOCK_CREATE_RULESET_VERSION, which is 1 << 0. */
 #define AEGIS_LANDLOCK_CREATE_RULESET_VERSION 1U
 
+/* struct clone_args from <linux/sched.h>, up to CLONE_ARGS_SIZE_VER2 (88 bytes); see clone3(2). */
+struct aegis_clone_args {
+    uint64_t flags;
+    uint64_t pidfd;
+    uint64_t child_tid;
+    uint64_t parent_tid;
+    uint64_t exit_signal;
+    uint64_t stack;
+    uint64_t stack_size;
+    uint64_t tls;
+    uint64_t set_tid;
+    uint64_t set_tid_size;
+    uint64_t cgroup;
+};
+
+#define AEGIS_CLONE_PIDFD 0x00001000ULL
+#define AEGIS_CLONE_NEWNS 0x00020000ULL
+#define AEGIS_CLONE_NEWCGROUP 0x02000000ULL
+#define AEGIS_CLONE_NEWUTS 0x04000000ULL
+#define AEGIS_CLONE_NEWIPC 0x08000000ULL
+#define AEGIS_CLONE_NEWUSER 0x10000000ULL
+#define AEGIS_CLONE_NEWPID 0x20000000ULL
+#define AEGIS_CLONE_NEWNET 0x40000000ULL
+#define AEGIS_CLONE_NEWTIME 0x00000080ULL
+
 long aegis_sys_clone3(void *args, size_t size);
+long aegis_sys_pidfd_send_signal(int pidfd, int sig, unsigned int flags);
+long aegis_sys_pivot_root(const char *new_root, const char *put_old);
 long aegis_sys_openat2(int dirfd, const char *path, const struct aegis_open_how *how, size_t size);
 long aegis_sys_pidfd_open(int pid, unsigned int flags);
 long aegis_sys_landlock_create_ruleset(const void *attr, size_t size, uint32_t flags);

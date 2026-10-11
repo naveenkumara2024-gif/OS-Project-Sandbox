@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "sys.h"
 
+#include <sys/syscall.h>
 #include <unistd.h>
 
 /*
@@ -12,6 +13,7 @@
 #if defined(__x86_64__) || defined(__aarch64__)
 #define AEGIS_NR_PIDFD_OPEN 434
 #define AEGIS_NR_CLONE3 435
+#define AEGIS_NR_PIDFD_SEND_SIGNAL 424
 #define AEGIS_NR_OPENAT2 437
 #define AEGIS_NR_LANDLOCK_CREATE_RULESET 444
 #else
@@ -21,6 +23,18 @@
 long aegis_sys_clone3(void *args, size_t size)
 {
     return syscall(AEGIS_NR_CLONE3, args, size);
+}
+
+long aegis_sys_pidfd_send_signal(int pidfd, int sig, unsigned int flags)
+{
+    return syscall(AEGIS_NR_PIDFD_SEND_SIGNAL, pidfd, sig, NULL, flags);
+}
+
+/* pivot_root has no glibc wrapper; its number differs between architectures, so the system header
+ * is used for it. */
+long aegis_sys_pivot_root(const char *new_root, const char *put_old)
+{
+    return syscall(SYS_pivot_root, new_root, put_old);
 }
 
 long aegis_sys_openat2(int dirfd, const char *path, const struct aegis_open_how *how, size_t size)
