@@ -1,0 +1,41 @@
+# CI skeleton (Stage 0). Not executed in this stage. Before relying on it, pin each `uses:` to a
+# full commit SHA (CLAUDE.md 6.7) and decide the Node.js versions to test.
+name: ci
+
+on:
+  push:
+    branches: [main, 'stage/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+
+  native:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build release and debug-asan with -Werror
+        run: node scripts/build-native.mjs all --cc=${{ matrix.cc }}
+      - name: Probe output must be valid JSON
+        run: |
+          ./native/build/debug-asan/aegis-cell probe > probe.json
+          node -e "JSON.parse(require('node:fs').readFileSync('probe.json', 'utf8'))"
+      - name: Format and lint the native sources
+        run: node scripts/check-native.mjs
