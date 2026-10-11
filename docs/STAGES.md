@@ -5,7 +5,7 @@ Single source of truth for stage state (CLAUDE.md §0.1). Statuses: `planned`, `
 | # | Stage | Status | Prompt | Report | Notes |
 | --- | --- | --- | --- | --- | --- |
 | 0 | Scaffold | done | [stage-0-scaffold.md](prompts/stage-0-scaffold.md) | [stage-0.md](reports/stage-0.md) | All gate items met and measured on WSL2 (see report). Branch `stage/0-scaffold` |
-| 1 | Core cell | planned | | | |
+| 1 | Core cell | in-progress | [stage-1-core-cell.md](prompts/stage-1-core-cell.md) | | Approved 2026-10-11; branch `stage/1-core-cell` from the tip of `stage/0-scaffold` |
 | 2 | Limits and receipts | planned | | | |
 | 3 | Workspace | planned | | | |
 | 4 | Hardening | planned | | | |
@@ -28,3 +28,7 @@ Single source of truth for stage state (CLAUDE.md §0.1). Statuses: `planned`, `
 - 2026-10-11: Owner installed `libclang-rt-21-dev`; Clang `debug-asan` builds and probes cleanly. Last gate item met. Stage 0 -> `done`. Waiting on owner to set Stage 1 to `implement`.
 
 - 2026-10-11: Pre-Stage-1 audit (owner asked to confirm Stage 0 is complete). Stage 0 set to `in-progress` per CLAUDE.md 0.8 and back to `done`: restored the Results section of the report (lost in `6013881`), added the full probe JSON, and corrected `docs/SETUP-WSL2.md` (Linux npm check, Clang sanitizer runtime, lockfile install). Documentation only; no code changed.
+
+- 2026-10-11: Owner asked to implement the next stage after confirming Stage 0 is complete. Stage 0 audit done (see the entry above). Stage 1 prompt drafted at `docs/prompts/stage-1-core-cell.md` (`status: draft`). Stage 1 -> `prompt-drafted`. No implementation file created; waiting for explicit approval (CLAUDE.md 0.3 step 5).
+
+- 2026-10-11: Owner answered the five open questions (recommended options) and then approved the Stage 1 prompt (explicit "approved" answer to "Do you approve the Stage 1 prompt as written?"). Approved SHA-256 `fe8456ac2a7f3063d81568852a7ef1cc8db2981e3edbe92eb219c65c616c556e`, computed over the file with `status: draft` and empty `approved_at`/`approved_sha256` (same convention as Stage 0). Stage -> `approved` -> `in-progress`; branch `stage/1-core-cell` created from the tip of `stage/0-scaffold` (`3b8dcc3`).
