@@ -1,10 +1,10 @@
 ---
 stage: 1
 name: core-cell
-status: approved
+status: draft
 created: 2026-10-11
-approved_at: 2026-10-11
-approved_sha256: fe8456ac2a7f3063d81568852a7ef1cc8db2981e3edbe92eb219c65c616c556e
+approved_at:
+approved_sha256:
 ---
 
 # Stage 1: Core cell
@@ -81,7 +81,7 @@ Built by the child, after the maps exist, using only raw syscalls and fixed buff
 1. `mount(NULL, "/", NULL, MS_REC|MS_PRIVATE)`: stop propagation to the host.
 2. `mount("tmpfs", <cell_dir>/root, "tmpfs", MS_NOSUID|MS_NODEV, "size=<bytes>,mode=0755")` where `<cell_dir>` is the per-cell directory created and owned by the host (section 4.6). Mount options are built from validated integers only (CLAUDE.md 6.2).
 3. Create `usr`, `proc`, `dev`, `tmp`, `etc`, `.old` inside it, and the merged-usr symlinks `bin → usr/bin`, `lib → usr/lib`, `lib64 → usr/lib64`, `sbin → usr/sbin`.
-4. Bind `/usr` read-only: `MS_BIND|MS_REC` then `MS_REMOUNT|MS_BIND|MS_RDONLY|MS_NOSUID|MS_NODEV` **preserving the locked flags read back with `statvfs`/`/proc/self/mountinfo`** (a user namespace cannot clear flags that are locked on inherited mounts, and a remount that omits them fails with `EPERM`). The helper then **verifies** `ST_RDONLY` and `ST_NOSUID` with `statvfs` on the bind and aborts if either is missing; a read-only claim that is not checked is not a layer.
+4. Bind `/usr` read-only **(superseded by Amendment 1: a composite bind, not a single recursive bind)**: `MS_BIND|MS_REC` then `MS_REMOUNT|MS_BIND|MS_RDONLY|MS_NOSUID|MS_NODEV` **preserving the locked flags read back with `statvfs`/`/proc/self/mountinfo`** (a user namespace cannot clear flags that are locked on inherited mounts, and a remount that omits them fails with `EPERM`). The helper then **verifies** `ST_RDONLY` and `ST_NOSUID` with `statvfs` on the bind and aborts if either is missing; a read-only claim that is not checked is not a layer.
 5. Mask Node.js: bind an empty read-only file over `usr/bin/node`, `usr/bin/nodejs`, and an empty directory over `usr/include/node` and `usr/lib/node_modules` when they exist (CLAUDE.md 6.1 item 2). This is a best-effort deny list on top of the host `/usr`, not a minimal rootfs; see section 11 item 2.
 6. Fresh `proc` at `<root>/proc` with `MS_NOSUID|MS_NODEV|MS_NOEXEC`, mounted by PID 1 of the new pid namespace. The kernel refuses a new procfs in a user namespace if the host `/proc` has overmounts (`mount_too_revealing`); we mount it before anything is stacked over the host's `/proc`. **Hypothesis**, confirmed in step 1.
 7. `/dev`: a `tmpfs` with bind mounts of host `/dev/{null,zero,full,random,urandom,tty}` on empty files (device nodes cannot be created in a user namespace), plus a `tmpfs` `/dev/shm`. No `devpts` in this stage (no terminals).
@@ -236,3 +236,45 @@ All five questions were answered with the recommended option; the design above a
 3. **Interim identity:** payload is uid 0 mapped to the host uid with namespace-local capabilities until Stage 4 (sections 4.3 and 4.9).
 4. **Jazzer.js:** deferred to Stage 5; the TypeScript request parser is covered by fast-check properties in this stage.
 5. **Limits:** `wall_ms` default 10 000 (max 60 000), `output_kb` default 256 (max 1024), root tmpfs 64 MiB, `/tmp` 16 MiB.
+
+## Amendment 1 (2026-10-11): `/usr` must be bound as a composite tree
+
+Raised under CLAUDE.md 0.5 after the step 1 spike. The approval of the previous text (SHA-256 `fe8456ac2a7f3063d81568852a7ef1cc8db2981e3edbe92eb219c65c616c556e`, over the draft form) is void; this file needs a new approval.
+
+### A1.1 What the spike measured (kernel `6.18.33.2-microsoft-standard-WSL2`, run unprivileged, no host state changed)
+
+Confirmed hypotheses:
+
+- One `clone3` with `CLONE_NEWUSER | NEWPID | NEWNS | NEWNET | NEWIPC | NEWUTS | NEWCGROUP | NEWTIME | CLONE_PIDFD` succeeds (`CLONE_NEWTIME` included; `/proc/self/timens_offsets` is present inside).
+- The parent can write `setgroups=deny`, `gid_map` and `uid_map` (`0 1000 1`); the child is pid 1, uid 0.
+- `mount / MS_REC|MS_PRIVATE`, tmpfs root, procfs (mounted before `pivot_root`), the six `/dev` bind mounts, `/dev/shm`, `/tmp`, `pivot_root`, `umount2(/.old)`, `sethostname` all succeed. After pivot the root lists exactly `bin dev etc lib lib64 proc sbin tmp usr`, the network namespace has only `lo`, writes to `/usr` give `EROFS`, and the host cell directory is removable afterwards.
+- `statvfs` on a bind reports `ST_RDONLY`, `ST_NOSUID`, `ST_NODEV` after the remount, so the verified-read-only rule (4.4 step 4) is implementable.
+- The payload has `CapEff 000001ffffffffff` (namespace-local), as section 4.9 already states.
+
+Refuted: **a single recursive bind of host `/usr` is not acceptable.** On this machine WSL mounts three filesystems under `/usr`, and `MS_BIND|MS_REC` copies them into the cell:
+
+| Host path | Filesystem | Why it must not be in a cell |
+| --- | --- | --- |
+| `/usr/lib/wsl/drivers` | 9p (`drivers`, Windows driver store) | exposes Windows files (CLAUDE.md 6.1 item 2) |
+| `/usr/lib/wsl/lib` | overlay (GPU libraries) | WSL host integration, no GPU support (CLAUDE.md 1.3) |
+| `/usr/lib/modules/<kernel>` | overlay (kernel modules) | host kernel information |
+
+Measured on the alternatives: a non-recursive `MS_BIND` of `/usr` fails with `EINVAL` (the kernel refuses to bind a mount that has locked children without also copying them), and `umount2` of the three copied submounts fails with `EINVAL` (they are locked). Over-mounting them with an empty tmpfs would hide them, but a payload holding `CAP_SYS_ADMIN` (which it does until Stage 4) could unmount the tmpfs and reveal them, so that is rejected.
+
+Validated alternative (composite bind): walk `/usr`, bind every directory that contains no submount as a whole (`MS_BIND|MS_REC` on a leaf-like directory succeeds), recurse into directories that do contain one, skip the submount paths themselves, recreate symlinks, bind regular files individually. Measured on this machine: 75 bind mounts, all 75 remounted read-only with `nosuid,nodev` and verified, no 9p or overlay mount in the cell, the payload shell ran.
+
+### A1.2 Design change
+
+1. **Plan in TypeScript, execution in C.** A new `src/launch/rootfs-plan.ts` reads `/proc/self/mountinfo` and the host `/usr` tree and produces an ordered list of `{kind: bind-dir | bind-file | symlink, source, target, link}` entries. The launch spec gains repeated `ROOT_ENTRY` records (cap 512 entries and 64 KiB total; the measured plan is 75 entries). The helper has no directory walking code on the boot path: it only executes the list. Entry paths are validated (absolute, under `/usr` for sources, no NUL, no `..`, no mount-option characters).
+2. **Verify, never trust the plan.** After the binds, the helper reads `/proc/self/mountinfo` and aborts with `layer root fail` if any mount under the new root other than the planned ones exists, or if any planned mount lacks `ST_RDONLY | ST_NOSUID | ST_NODEV` after the remount. A host `/usr` that changes between planning and boot (new mount, removed file) therefore fails closed instead of producing a different cell.
+3. **Node masking (4.4 step 5) is unchanged** and applied after the composite bind (bind an empty file over `usr/bin/node`, an empty directory over `usr/include/node`); `usr/bin/nodejs` and `usr/lib/node_modules` when they exist. It remains a best-effort deny list, not a security boundary, because of 4.9.
+4. **Fixed `/usr`-relative content that lives on submount paths is simply absent** (for example `/usr/lib/wsl/drivers`, `/usr/lib/wsl/lib`, `/usr/lib/modules/*`); the root plan is the only source of what appears in the cell.
+
+### A1.3 Effects on the rest of the prompt
+
+- Section 4.2 and 4.5: no change to descriptors; status records unchanged (`layer root ok|fail` covers the whole root build).
+- Section 4.6: adds `src/launch/rootfs-plan.ts`. Section 5: adds `src/launch/rootfs-plan.ts`, `tests/unit/rootfs-plan.test.ts`; `native/src/spec.c` gains the `ROOT_ENTRY` record. Size estimates unchanged in order of magnitude.
+- Section 7 step 1 is **done** (spike run in the scratchpad outside the repository, so nothing needs deleting); steps 2 to 10 follow with the plan generator added to step 2 and its verification to step 4.
+- Section 8 adds: unit tests of the plan generator on canned `mountinfo` and directory fixtures (submounts skipped, symlinks kept, order parent-before-child, caps enforced) and an integration assertion that `/proc/self/mountinfo` inside a cell contains no `9p` or `overlay` filesystem and that `/usr/lib/wsl/drivers` has no entries. Latency of a run is reported with the 75-bind plan (measured, not estimated).
+- Section 9 adds a risk: host `/usr` layout differs between machines and distributions; mitigated by planning at run time from the actual mount table, the verify-after-bind rule, and fail closed. A plan with more than 512 entries is refused with a clear error rather than truncated.
+- Sections 1 to 3, 4.1 to 4.4 (except step 4's mechanism), 4.7 to 4.10 and 6 to 11 are unchanged. No new dependencies and no privileged actions.
