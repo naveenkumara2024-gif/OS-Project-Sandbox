@@ -1,10 +1,10 @@
 ---
 stage: 1
 name: core-cell
-status: draft
+status: approved
 created: 2026-10-11
-approved_at:
-approved_sha256:
+approved_at: 2026-10-11
+approved_sha256: 3dc1965f03f055b88d9718a741a04744377e458e2bfa3f5c1c797f7621281b1e
 ---
 
 # Stage 1: Core cell
