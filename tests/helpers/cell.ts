@@ -1,4 +1,5 @@
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CellResult } from '../../src/launch/run-cell.js';
@@ -91,5 +92,25 @@ export async function requireCgroupLimits(helper: HelperBuild): Promise<void> {
     throw new Error(
       `inconclusive: cgroup limits are not active (memory=${String(l.cgroup_memory)}, pids=${String(l.cgroup_pids)}); refusing to run a resource probe. ${r.hint ?? ''}`,
     );
+  }
+}
+
+/**
+ * Runs `fn` with a private, empty parent directory for per-cell directories, so a count of what is
+ * left behind is not disturbed by other test files running cells at the same time. The directory
+ * is removed (non-recursively) even when an assertion throws.
+ */
+export async function withPrivateParent<T>(
+  fn: (parent: string, leftover: () => string[]) => Promise<T>,
+): Promise<T> {
+  const parent = mkdtempSync(join(tmpdir(), 'aegis-parent-'));
+  try {
+    return await fn(parent, () => readdirSync(parent));
+  } finally {
+    try {
+      rmdirSync(parent);
+    } catch {
+      // Not empty: a leak the test itself has already asserted on.
+    }
   }
 }

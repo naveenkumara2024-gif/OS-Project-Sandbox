@@ -16,16 +16,24 @@ describe.each(helperBuilds())('probe 17: disk fill ($name build)', (helper) => {
     const hostBefore = freeBytes(tmpdir());
     const r = await runIn(
       helper,
-      request(['/usr/bin/dd', 'if=/dev/zero', 'of=/tmp/fill', 'bs=1M'], {
-        limits: { disk_mb: 8, wall_ms: 20000 },
-      }),
+      request(
+        [
+          '/usr/bin/sh',
+          '-c',
+          // Keep dd's exit status as the payload's, and report how much really landed.
+          'dd if=/dev/zero of=/tmp/fill bs=1M; rc=$?; echo size=$(wc -c < /tmp/fill); exit $rc',
+        ],
+        {
+          limits: { disk_mb: 8, wall_ms: 20000 },
+        },
+      ),
     );
     expect(r.termination, JSON.stringify(r)).toEqual({ cause: 'disk_limit', path: '/tmp' });
     expect(r.exit_code).toBe(1);
     expect(r.stderr).toMatch(/No space left on device/);
     expect(r.limits_hit).toContain('disk');
-    // dd reports how much it managed to write: about the cap, never more.
-    const written = /(\d+) bytes/.exec(r.stderr);
+    // How much really landed: about the cap, never more.
+    const written = /size=(\d+)/.exec(r.stdout);
     expect(Number(written?.[1] ?? 0)).toBeLessThanOrEqual(8 * 1024 * 1024);
     expect(Number(written?.[1] ?? 0)).toBeGreaterThan(4 * 1024 * 1024);
 
@@ -48,6 +56,7 @@ describe.each(helperBuilds())('probe 17: disk fill ($name build)', (helper) => {
     // /usr is writable only because the plan created that directory on the cell's tmpfs root;
     // /home does not exist. Either way nothing reaches the host.
     expect(r.stdout).toMatch(/rc=[01]/);
-    expect(r.stdout).toContain('No such file or directory');
+    // A failed redirection is reported on the shell's own stderr, not on the command's.
+    expect(r.stdout + r.stderr).toMatch(/Directory nonexistent|No such file or directory/);
   });
 });

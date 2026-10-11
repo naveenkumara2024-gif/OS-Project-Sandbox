@@ -76,6 +76,21 @@ describe('classify', () => {
     expect(c.termination).toEqual({ cause: 'timeout', clock: 'wall' });
   });
 
+  it('an output or pids kill is a payload outcome even if init never wrote started', () => {
+    for (const kill of [
+      { kind: 'output_limit', stream: 'stdout' },
+      { kind: 'pids_limit' },
+    ] as const) {
+      const c = classify({
+        records: [{ kind: 'layer', layer: 'init', ok: true }],
+        supervisorKill: kill,
+        oomKills: 0,
+        pidsMaxHits: 0,
+      });
+      expect(c.termination.cause).toBe(kill.kind);
+    }
+  });
+
   it('no records at all is an internal error, never a clean exit', () => {
     const c = classify({ records: [], supervisorKill: null, oomKills: 0, pidsMaxHits: 0 });
     expect(c.termination.cause).toBe('internal_error');
@@ -156,5 +171,8 @@ describe('classify', () => {
     expect(signalName(9)).toBe('SIGKILL');
     expect(errnoName(1)).toBe('EPERM');
     expect(signalName(999)).toBe('SIG999');
+    // Aliases resolve to the familiar name, not to whichever the table lists last.
+    expect(signalName(6)).toBe('SIGABRT');
+    expect(signalName(17)).toBe('SIGCHLD');
   });
 });

@@ -10,9 +10,13 @@ import {
   reapOrphanCells,
 } from '../../src/launch/cgroup.js';
 import { RECEIPT_LAYERS } from '../../src/probe/isolation.js';
+import { superviseCell } from '../../src/supervise/cell-supervisor.js';
+import { encodeLaunchSpec } from '../../src/sys/launch-spec.js';
+import { parseStatus } from '../../src/sys/status.js';
+import { OwnedFd } from '../../src/util/fd.js';
 import { reapStaleTempDirs } from '../../src/util/tempdir.js';
 import { helperBuilds, request, runIn, runWith, sh } from '../helpers/cell.js';
-import { readFileSync } from 'node:fs';
+import { constants as fsc, readFileSync } from 'node:fs';
 
 // needs_userns and needs_cgroup: the engine must run inside a delegated subtree, which `npm test`
 // arranges through scripts/run-in-scope.mjs. If it does not, these fail with the hint; they are
@@ -105,6 +109,47 @@ describe.each(helperBuilds())('limits and receipt ($name build)', (helper) => {
     // A receipt is present even in a refusal, and it claims nothing it did not establish.
     expect(r.isolation.level).toBe(0);
     expect(Object.values(r.isolation.layers).some(Boolean)).toBe(false);
+  });
+});
+
+describe.each(helperBuilds())('kernel refusal of placement ($name build)', (helper) => {
+  it('is reported as the cgroup_placement layer, and no payload starts', async () => {
+    // The root cgroup is not writable by this user, so clone3(CLONE_INTO_CGROUP) into it is
+    // refused by the kernel with EACCES: the same refusal a process in /init.scope would get.
+    const fd = OwnedFd.open('/sys/fs/cgroup', fsc.O_RDONLY | fsc.O_DIRECTORY);
+    if (!fd.ok) throw new Error(fd.error.context);
+    using owned = fd.value;
+    const spec = encodeLaunchSpec({
+      argv: ['/usr/bin/echo', 'MUST-NOT-RUN'],
+      env: ['PATH=/usr/bin:/bin'],
+      rootMountpoint: '/tmp/aegis-never-created/root',
+      hostname: 'aegis',
+      rootTmpfsBytes: 64 * 1024 * 1024,
+      tmpTmpfsBytes: 16 * 1024 * 1024,
+      entries: [],
+      maskFiles: [],
+      maskDirs: [],
+      cgroupFd: true,
+    });
+    if (!spec.ok) throw new Error(spec.error.context);
+    const r = await superviseCell({
+      helper: helper.path,
+      spec: spec.value,
+      wallMs: 5000,
+      maxOutputBytes: 4096,
+      cgroupFd: owned.fd,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.stdout.toString()).not.toContain('MUST-NOT-RUN');
+    const recs = parseStatus(r.value.status);
+    expect(recs.ok && recs.value).toContainEqual({
+      kind: 'layer',
+      layer: 'cgroup_placement',
+      ok: false,
+      errno: 13,
+    });
+    expect(recs.ok && recs.value.some((x) => x.kind === 'started')).toBe(false);
   });
 });
 

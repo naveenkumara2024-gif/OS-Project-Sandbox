@@ -1,25 +1,12 @@
-import { mkdtempSync, readdirSync, rmdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { type PlanEnv } from '../../src/launch/rootfs-plan.js';
 import { parseMountInfo } from '../../src/probe/procfs.js';
 import { RECEIPT_LAYERS } from '../../src/probe/isolation.js';
 import { err, ok } from '../../src/util/result.js';
-import { helperBuilds, request, runIn, sh } from '../helpers/cell.js';
+import { helperBuilds, request, runIn, sh, withPrivateParent } from '../helpers/cell.js';
 
 // needs_userns: these tests create real cells. If the kernel cannot, they fail with the helper's
 // layer and errno in the assertion message; they are never skipped (CLAUDE.md 7).
-
-/** A private parent for per-cell directories, so concurrent test files cannot disturb the count. */
-function privateParent(): string {
-  return mkdtempSync(join(tmpdir(), 'aegis-parent-'));
-}
-
-function expectEmptyAndRemove(parent: string): void {
-  expect(readdirSync(parent)).toEqual([]);
-  rmdirSync(parent);
-}
 
 describe.each(helperBuilds())('cell ($name build)', (helper) => {
   it('runs a command and reports all eleven layers as established', async () => {
@@ -74,14 +61,15 @@ describe.each(helperBuilds())('cell ($name build)', (helper) => {
   });
 
   it('kills the whole cell on wall-clock timeout and removes the cell directory', async () => {
-    const parent = privateParent();
-    const t0 = Date.now();
-    const r = await sh(helper, 'sleep 30 & sleep 30', { limits: { wall_ms: 400 } }, parent);
-    const took = Date.now() - t0;
-    expect(r.termination).toEqual({ cause: 'timeout', clock: 'wall' });
-    expect(took).toBeGreaterThanOrEqual(350);
-    expect(took).toBeLessThan(4000);
-    expectEmptyAndRemove(parent);
+    await withPrivateParent(async (parent, leftover) => {
+      const t0 = Date.now();
+      const r = await sh(helper, 'sleep 30 & sleep 30', { limits: { wall_ms: 400 } }, parent);
+      const took = Date.now() - t0;
+      expect(r.termination).toEqual({ cause: 'timeout', clock: 'wall' });
+      expect(took).toBeGreaterThanOrEqual(350);
+      expect(took).toBeLessThan(4000);
+      expect(leftover()).toEqual([]);
+    });
   });
 
   it('stops an output flood at the cap', async () => {
@@ -203,24 +191,25 @@ describe.each(helperBuilds())('cell ($name build)', (helper) => {
   });
 
   it('survives 1000 near-simultaneous exit and timeout races without a wrong answer', async () => {
-    const parent = privateParent();
-    const causes = new Map<string, number>();
-    const total = 1000;
-    const batch = 8;
-    for (let i = 0; i < total; i += batch) {
-      const rs = await Promise.all(
-        Array.from({ length: Math.min(batch, total - i) }, () =>
-          sh(helper, 'sleep 0.01', { limits: { wall_ms: 40 } }, parent),
-        ),
-      );
-      for (const r of rs) {
-        const c = r.termination.cause;
-        causes.set(c, (causes.get(c) ?? 0) + 1);
-        expect(['exit', 'timeout'], JSON.stringify(r)).toContain(c);
-        if (c === 'exit') expect(r.exit_code).toBe(0);
+    await withPrivateParent(async (parent, leftover) => {
+      const causes = new Map<string, number>();
+      const total = 1000;
+      const batch = 8;
+      for (let i = 0; i < total; i += batch) {
+        const rs = await Promise.all(
+          Array.from({ length: Math.min(batch, total - i) }, () =>
+            sh(helper, 'sleep 0.01', { limits: { wall_ms: 40 } }, parent),
+          ),
+        );
+        for (const r of rs) {
+          const c = r.termination.cause;
+          causes.set(c, (causes.get(c) ?? 0) + 1);
+          expect(['exit', 'timeout'], JSON.stringify(r)).toContain(c);
+          if (c === 'exit') expect(r.exit_code).toBe(0);
+        }
       }
-    }
-    expect([...causes.values()].reduce((a, b) => a + b, 0)).toBe(total);
-    expectEmptyAndRemove(parent);
+      expect([...causes.values()].reduce((a, b) => a + b, 0)).toBe(total);
+      expect(leftover()).toEqual([]);
+    });
   }, 300_000);
 });

@@ -41,9 +41,15 @@ export interface Classified {
   readonly limitsHit: readonly LimitHit[];
 }
 
-const SIGNAL_NAMES = new Map<number, string>(
-  Object.entries(constants.signals).map(([name, num]) => [num, name]),
-);
+// Linux gives some signals two names (SIGABRT/SIGIOT, SIGIO/SIGPOLL, SIGCHLD/SIGCLD); a hint should
+// say the one people know, whichever order the table lists them in.
+const ALIASES = new Set(['SIGIOT', 'SIGPOLL', 'SIGCLD', 'SIGUNUSED']);
+const SIGNAL_NAMES = new Map<number, string>();
+for (const [name, num] of Object.entries(constants.signals)) {
+  if (!ALIASES.has(name) && !SIGNAL_NAMES.has(num)) {
+    SIGNAL_NAMES.set(num, name);
+  }
+}
 
 export function signalName(n: number): string {
   return SIGNAL_NAMES.get(n) ?? `SIG${String(n)}`;
@@ -75,7 +81,13 @@ export function classify(f: Facts): Classified {
   if (k?.kind === 'timeout') limitsHit.push(k.clock === 'cpu' ? 'cpu' : 'wall');
   if (k?.kind === 'output_limit') limitsHit.push('output');
 
-  const started = f.records.some((r) => r.kind === 'started');
+  // An output or pids kill can only come from a payload that is running, even when init was
+  // killed before it could write its `started` record (a fast flooder can reach the cap in the
+  // gap between the payload's execve and that record).
+  const started =
+    f.records.some((r) => r.kind === 'started') ||
+    k?.kind === 'output_limit' ||
+    k?.kind === 'pids_limit';
   if (!started && k?.kind === 'timeout') {
     // The supervisor ended the cell before the payload got going (a very short limit, a loaded
     // machine). Any layer failure records are then consequences of that kill, not causes.
