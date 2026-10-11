@@ -19,6 +19,10 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --ignore-scripts
+      # The integration and escape tests run real cells, so they need the helper builds. They also
+      # need unprivileged user namespaces; if the runner forbids them the tests fail loudly
+      # (CLAUDE.md 7), they are not skipped.
+      - run: node scripts/build-native.mjs all
       - run: npm run check
 
   native:
@@ -37,5 +41,11 @@ jobs:
         run: |
           ./native/build/debug-asan/aegis-cell probe > probe.json
           node -e "JSON.parse(require('node:fs').readFileSync('probe.json', 'utf8'))"
+      - name: Fuzz the launch-spec parser for 60 seconds
+        if: matrix.cc == 'clang'
+        run: |
+          node scripts/build-native.mjs fuzz --cc=clang
+          mkdir -p /tmp/spec-corpus && cp tests/fuzz/corpus/spec/* /tmp/spec-corpus/
+          ./native/build/fuzz/fuzz-spec -max_total_time=60 -max_len=70000 /tmp/spec-corpus
       - name: Format and lint the native sources
         run: node scripts/check-native.mjs

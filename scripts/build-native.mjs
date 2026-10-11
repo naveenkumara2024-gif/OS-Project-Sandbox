@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Builds the native helper `aegis-cell` by invoking the C compiler with an argument vector (no
-// shell). Usage: node scripts/build-native.mjs [release|debug-asan|all] [--cc=gcc|clang]
+// shell). Usage: node scripts/build-native.mjs [release|debug-asan|fuzz|all] [--cc=gcc|clang]
 //
-// Output: native/build/<mode>/aegis-cell. The release build is attempted as static-pie, then as
+// Output: native/build/<mode>/aegis-cell (fuzz: native/build/fuzz/fuzz-spec, clang only, never part
+// of `all`). The release build is attempted as static-pie, then as
 // plain static; if both fail it falls back to a dynamic build and says so loudly, because the
 // in-cell helper must not depend on host shared libraries (CLAUDE.md 2.1).
 import { spawnSync } from 'node:child_process';
@@ -11,7 +12,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const sources = ['main.c', 'sys.c', 'probe.c'].map((f) => join(root, 'native', 'src', f));
+const src = (names) => names.map((f) => join(root, 'native', 'src', f));
+const helperSources = src(['main.c', 'sys.c', 'probe.c', 'spec.c', 'boot.c']);
 
 // -U before -D: some distributions predefine _FORTIFY_SOURCE, and -Werror would reject the clash.
 const common = [
@@ -31,6 +33,8 @@ const hardenedLink = ['-Wl,-z,relro,-z,now'];
 
 const modes = {
   release: {
+    sources: helperSources,
+    outName: 'aegis-cell',
     compile: ['-O2'],
     links: [
       { label: 'static-pie', flags: ['-static-pie'] },
@@ -38,7 +42,20 @@ const modes = {
       { label: 'DYNAMIC (static link failed; not acceptable inside a cell)', flags: ['-pie'] },
     ],
   },
+  fuzz: {
+    // libFuzzer target for the launch-spec parser only (CLAUDE.md 5.5). libFuzzer is part of
+    // clang's runtime, so this mode needs --cc=clang and libclang-rt-<N>-dev.
+    sources: src(['spec.c', 'fuzz_spec.c']),
+    outName: 'fuzz-spec',
+    clangOnly: true,
+    compile: ['-O1', '-g', '-fno-omit-frame-pointer', '-fsanitize=fuzzer,address,undefined'],
+    links: [
+      { label: 'libFuzzer (asan+ubsan)', flags: ['-pie', '-fsanitize=fuzzer,address,undefined'] },
+    ],
+  },
   'debug-asan': {
+    sources: helperSources,
+    outName: 'aegis-cell',
     // ASan does not support static glibc, so this build is dynamic by design.
     compile: ['-O1', '-g', '-fno-omit-frame-pointer', '-fsanitize=address,undefined'],
     links: [{ label: 'dynamic-pie (asan)', flags: ['-pie', '-fsanitize=address,undefined'] }],
@@ -52,7 +69,7 @@ function parseArgs(argv) {
     if (arg.startsWith('--cc=')) {
       cc = arg.slice('--cc='.length);
     } else if (arg === 'all') {
-      wanted.push(...Object.keys(modes));
+      wanted.push(...Object.keys(modes).filter((m) => modes[m].clangOnly !== true));
     } else if (arg in modes) {
       wanted.push(arg);
     } else {
@@ -62,7 +79,8 @@ function parseArgs(argv) {
   if (!/^[A-Za-z0-9_.+-]+$/.test(cc)) {
     throw new Error(`refusing compiler name with unexpected characters: ${cc}`);
   }
-  return { cc, wanted: wanted.length > 0 ? [...new Set(wanted)] : Object.keys(modes) };
+  const defaults = Object.keys(modes).filter((m) => modes[m].clangOnly !== true);
+  return { cc, wanted: wanted.length > 0 ? [...new Set(wanted)] : defaults };
 }
 
 function run(cc, args) {
@@ -77,12 +95,15 @@ function build(cc, name) {
   const mode = modes[name];
   const outDir = join(root, 'native', 'build', name);
   mkdirSync(outDir, { recursive: true });
-  const out = join(outDir, 'aegis-cell');
+  const out = join(outDir, mode.outName);
+  if (mode.clangOnly === true && !cc.includes('clang')) {
+    throw new Error(`${name}: needs --cc=clang (libFuzzer is part of the clang runtime)`);
+  }
   for (const link of mode.links) {
     const args = [
       ...common,
       ...mode.compile,
-      ...sources,
+      ...mode.sources,
       '-o',
       out,
       ...hardenedLink,
