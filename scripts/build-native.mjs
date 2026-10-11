@@ -13,7 +13,16 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const src = (names) => names.map((f) => join(root, 'native', 'src', f));
-const helperSources = src(['main.c', 'sys.c', 'probe.c', 'spec.c', 'boot.c', 'init.c']);
+const helperSources = src([
+  'main.c',
+  'sys.c',
+  'probe.c',
+  'spec.c',
+  'boot.c',
+  'init.c',
+  'fsop.c',
+  'overlay.c',
+]);
 
 // -U before -D: some distributions predefine _FORTIFY_SOURCE, and -Werror would reject the clash.
 const common = [

@@ -31,6 +31,9 @@ const KEY = {
   maskFile: 8,
   maskDir: 9,
   cgroupFd: 10,
+  workspaceLower: 11,
+  workspaceRw: 12,
+  workspaceForceCopy: 13,
 } as const;
 
 /** The descriptor number the helper expects the cgroup directory on (native/src/spec.h). */
@@ -67,6 +70,15 @@ export interface LaunchSpec {
   readonly maskDirs: readonly string[];
   /** True when the control plane passes a cgroup directory on descriptor 6 (CLONE_INTO_CGROUP). */
   readonly cgroupFd: boolean;
+  /** Host paths for the workspace binds (Stage 3); all three present together, or omitted. */
+  readonly workspace?: {
+    readonly lower: string;
+    /** Host directory already containing "upper" and "work" subdirectories (same mount, as
+     * overlayfs requires of upperdir/workdir). */
+    readonly rw: string;
+    /** Skip the overlay attempt and go straight to the copy fallback (tests only). */
+    readonly forceCopy: boolean;
+  };
 }
 
 function badSpec(context: string): Result<never> {
@@ -226,6 +238,22 @@ export function encodeLaunchSpec(spec: LaunchSpec): Result<Uint8Array> {
     b.writeUInt32LE(CGROUP_FD, 0);
     w.record(KEY.cgroupFd, b);
   }
+  if (spec.workspace !== undefined) {
+    const ws = spec.workspace;
+    for (const [key, value] of [
+      [KEY.workspaceLower, ws.lower],
+      [KEY.workspaceRw, ws.rw],
+    ] as const) {
+      if (!isCleanAbsolutePath(value)) {
+        return badSpec('workspace path is not a clean absolute path');
+      }
+      const r2 = str(key, value, 'workspace path');
+      if (!r2.ok) return r2;
+    }
+    if (ws.forceCopy) {
+      w.record(KEY.workspaceForceCopy, Buffer.alloc(0));
+    }
+  }
   for (const m of spec.maskDirs) {
     if (!isCleanAbsolutePath(m) || !isUnderUsr(m)) return badSpec('mask path is not under /usr');
     const r2 = str(KEY.maskDir, m, 'mask path');
@@ -267,6 +295,9 @@ export function decodeLaunchSpec(bytes: Uint8Array): Result<LaunchSpec> {
   let rootTmpfsBytes: number | null = null;
   let tmpTmpfsBytes: number | null = null;
   let cgroupFd = false;
+  let wLower: string | null = null;
+  let wRw: string | null = null;
+  let wForceCopy = false;
 
   const text = (b: Buffer): string | null => {
     if (b.length < 1 || b[b.length - 1] !== 0 || b.subarray(0, b.length - 1).includes(0)) {
@@ -336,6 +367,22 @@ export function decodeLaunchSpec(bytes: Uint8Array): Result<LaunchSpec> {
         }
         cgroupFd = true;
         break;
+      case KEY.workspaceLower:
+      case KEY.workspaceRw: {
+        if (s === null) return badSpec('bad workspace path');
+        if (key === KEY.workspaceLower) {
+          if (wLower !== null) return badSpec('duplicate workspace path');
+          wLower = s;
+        } else {
+          if (wRw !== null) return badSpec('duplicate workspace path');
+          wRw = s;
+        }
+        break;
+      }
+      case KEY.workspaceForceCopy:
+        if (body.length !== 0 || wForceCopy) return badSpec('bad workspace force-copy record');
+        wForceCopy = true;
+        break;
       default:
         return badSpec('unknown key');
     }
@@ -360,5 +407,8 @@ export function decodeLaunchSpec(bytes: Uint8Array): Result<LaunchSpec> {
     maskFiles,
     maskDirs,
     cgroupFd,
+    ...(wLower !== null && wRw !== null
+      ? { workspace: { lower: wLower, rw: wRw, forceCopy: wForceCopy } }
+      : {}),
   });
 }

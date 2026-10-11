@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { type PlanEnv } from '../../src/launch/rootfs-plan.js';
 import { parseMountInfo } from '../../src/probe/procfs.js';
-import { RECEIPT_LAYERS } from '../../src/probe/isolation.js';
+import { NON_WORKSPACE_LAYERS } from '../../src/probe/isolation.js';
 import { err, ok } from '../../src/util/result.js';
 import { helperBuilds, request, runIn, sh, withPrivateParent } from '../helpers/cell.js';
 
@@ -15,7 +15,7 @@ describe.each(helperBuilds())('cell ($name build)', (helper) => {
     expect(r.exit_code).toBe(0);
     expect(r.stdout).toBe('hi\n');
     expect(r.stderr).toBe('');
-    for (const layer of RECEIPT_LAYERS) {
+    for (const layer of NON_WORKSPACE_LAYERS) {
       expect(r.isolation.layers[layer], layer).toBe(true);
     }
   });
@@ -25,7 +25,7 @@ describe.each(helperBuilds())('cell ($name build)', (helper) => {
     expect(r.termination).toEqual({ cause: 'exec_failed', errno: 2 });
     expect(r.exit_code).toBeNull();
     expect(r.error).toBeUndefined();
-    for (const layer of RECEIPT_LAYERS) {
+    for (const layer of NON_WORKSPACE_LAYERS) {
       // The helper builds everything before the final execve, so the receipt is complete.
       expect(r.isolation.layers[layer], layer).toBe(true);
     }

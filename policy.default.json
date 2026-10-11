@@ -1,0 +1,15 @@
+{
+  "_comment": "Human-owned ceiling policy (CLAUDE.md 6.4). Never mounted into a cell. Stage 3 only reads ingest_roots and ingest_excludes; the full ceiling schema (limits, network, require) arrives in Stage 4.",
+  "ingest_roots": [],
+  "ingest_excludes": [
+    ".ssh",
+    ".aws",
+    ".env",
+    ".env.*",
+    ".git/hooks",
+    "node_modules",
+    "dist",
+    "*.key",
+    "*.pem"
+  ]
+}

@@ -25,13 +25,28 @@ const MAX_ENV_BYTES = 8 * 1024;
 const MAX_ARG_BYTES = 4095; // the launch spec stores a NUL after each string within 4096 bytes
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const MAX_FILES = 256;
+const MAX_FILE_BYTES = 1024 * 1024;
+const noNulPath = (s: string): boolean => !s.includes('\0') && !s.startsWith('/') && s !== '';
 const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/;
 
 const noNul = (s: string): boolean => !s.includes('\0');
 const withinBytes = (s: string): boolean => Buffer.byteLength(s, 'utf8') <= MAX_ARG_BYTES;
 
+const fileSchema = z.strictObject({
+  path: z.string().max(4096).refine(noNulPath, 'must be a clean relative path'),
+  content: z.string().max(MAX_FILE_BYTES),
+});
+
+const workspaceSchema = z.strictObject({
+  source: z.string().min(1).max(4096).refine(noNul),
+  mode: z.enum(['overlay']).optional(),
+});
+
 const requestSchema = z.strictObject({
   id: z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/),
+  files: z.array(fileSchema).max(MAX_FILES).default([]),
+  workspace: workspaceSchema.optional(),
   command: z
     .array(z.string().refine(noNul).refine(withinBytes))
     .min(1)
@@ -61,6 +76,8 @@ const requestSchema = z.strictObject({
 
 export interface RunRequest {
   readonly id: string;
+  readonly files: readonly { readonly path: string; readonly content: string }[];
+  readonly workspaceSource: string | null;
   readonly command: readonly string[];
   /** A Map, never a plain object: caller-supplied keys must not touch prototypes (CLAUDE.md 6.4). */
   readonly env: ReadonlyMap<string, string>;
@@ -125,6 +142,8 @@ export function parseRunRequest(input: Buffer | string): Result<RunRequest> {
 
   return ok({
     id: data.id,
+    files: data.files,
+    workspaceSource: data.workspace?.source ?? null,
     command: data.command,
     env,
     wallMs: data.limits.wall_ms,

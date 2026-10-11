@@ -14,12 +14,20 @@ export const HELPER_LAYERS = [
   'proc',
   'dev',
   'init',
+  'overlay',
 ] as const;
 
 export type HelperLayer = (typeof HELPER_LAYERS)[number];
 
 /** Pseudo-layers that only ever appear in a failure record. */
-const FAILURE_ONLY = ['spec', 'namespaces', 'idmap', 'exec', 'cgroup_placement'] as const;
+const FAILURE_ONLY = [
+  'spec',
+  'namespaces',
+  'idmap',
+  'exec',
+  'cgroup_placement',
+  'workspace',
+] as const;
 const KNOWN_LAYERS = new Set<string>([...HELPER_LAYERS, ...FAILURE_ONLY]);
 
 export type StatusRecord =
@@ -32,7 +40,8 @@ export type StatusRecord =
   | { readonly kind: 'cellexit'; readonly code: number }
   | { readonly kind: 'cellsig'; readonly signal: number }
   /** A capped tmpfs that was full when the payload ended. */
-  | { readonly kind: 'full'; readonly path: string };
+  | { readonly kind: 'full'; readonly path: string }
+  | { readonly kind: 'workspace'; readonly mode: 'overlay' | 'copy' };
 
 const MAX_RECORDS = 256;
 
@@ -100,6 +109,10 @@ export function parseStatus(text: string): Result<StatusRecord[]> {
       }
       if (head === 'full' && (f[1] === '/' || f[1] === '/tmp' || f[1] === '/dev/shm')) {
         out.push({ kind: 'full', path: f[1] });
+        continue;
+      }
+      if (head === 'workspace' && (f[1] === 'overlay' || f[1] === 'copy')) {
+        out.push({ kind: 'workspace', mode: f[1] });
         continue;
       }
     }

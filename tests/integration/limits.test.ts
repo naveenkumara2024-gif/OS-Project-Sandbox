@@ -9,7 +9,7 @@ import {
   realCgroupFs,
   reapOrphanCells,
 } from '../../src/launch/cgroup.js';
-import { RECEIPT_LAYERS } from '../../src/probe/isolation.js';
+import { NON_WORKSPACE_LAYERS } from '../../src/probe/isolation.js';
 import { superviseCell } from '../../src/supervise/cell-supervisor.js';
 import { encodeLaunchSpec } from '../../src/sys/launch-spec.js';
 import { parseStatus } from '../../src/sys/status.js';
@@ -63,8 +63,8 @@ describe.each(helperBuilds())('limits and receipt ($name build)', (helper) => {
       disk_mb: 4,
       wall_ms: 5000,
     });
-    expect(r.isolation.level).toBe(2);
-    for (const l of RECEIPT_LAYERS) expect(r.isolation.layers[l], l).toBe(true);
+    expect(r.isolation.level).toBe(2); // no workspace requested, so tier 3 is not claimed
+    for (const l of NON_WORKSPACE_LAYERS) expect(r.isolation.layers[l], l).toBe(true);
     // Measured from the cgroup, so the helper really was inside it.
     expect(r.usage.memory_peak_bytes).toBeGreaterThan(0);
     expect(r.usage.memory_peak_bytes).toBeLessThan(64 * 1024 * 1024);

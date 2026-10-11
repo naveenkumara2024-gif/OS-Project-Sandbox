@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RECEIPT_LAYERS } from '../../src/probe/isolation.js';
+import { NON_WORKSPACE_LAYERS } from '../../src/probe/isolation.js';
 import { helperBuilds, request, runIn } from '../helpers/cell.js';
 
 // Probe 10: endless output. Layer expected to stop it: the bounded output readers.
@@ -10,8 +10,8 @@ describe.each(helperBuilds())('probe 10: endless output ($name build)', (helper)
     expect(Buffer.byteLength(r.stdout)).toBeLessThanOrEqual(64 * 1024);
     expect(r.limits_hit).toEqual(['output']);
     expect(r.hint).toContain('64 KB');
-    expect(r.isolation.level).toBe(2);
-    for (const l of RECEIPT_LAYERS) expect(r.isolation.layers[l], l).toBe(true);
+    expect(r.isolation.level).toBe(2); // no workspace requested, so tier 3 is not claimed
+    for (const l of NON_WORKSPACE_LAYERS) expect(r.isolation.layers[l], l).toBe(true);
     expect(r.usage.wall_ms).toBeGreaterThan(0);
   });
 });

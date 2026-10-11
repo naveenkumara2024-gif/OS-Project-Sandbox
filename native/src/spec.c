@@ -150,6 +150,8 @@ int aegis_spec_parse(const uint8_t *buf, size_t len, aegis_spec_t *out)
     int have_rootsz = 0;
     int have_tmpsz = 0;
     int have_cgfd = 0;
+    int have_wlower = 0;
+    int have_wrw = 0;
     size_t off = AEGIS_SPEC_HEADER_BYTES;
     while (off < len) {
         if (len - off < 8U) {
@@ -277,6 +279,34 @@ int aegis_spec_parse(const uint8_t *buf, size_t len, aegis_spec_t *out)
             }
             break;
         }
+        case AEGIS_KEY_WORKSPACE_LOWER:
+        case AEGIS_KEY_WORKSPACE_RW: {
+            int *seen = key == AEGIS_KEY_WORKSPACE_LOWER ? &have_wlower : &have_wrw;
+            if (*seen) {
+                return AEGIS_SPEC_E_DUPLICATE;
+            }
+            rc = take_string(body, rlen, &s);
+            if (rc != 0) {
+                return rc;
+            }
+            rc = check_abs_path(s);
+            if (rc != 0) {
+                return rc;
+            }
+            if (key == AEGIS_KEY_WORKSPACE_LOWER) {
+                out->workspace_lower = s;
+            } else {
+                out->workspace_rw = s;
+            }
+            *seen = 1;
+            break;
+        }
+        case AEGIS_KEY_WORKSPACE_FORCE_COPY:
+            if (rlen != 0U || out->workspace_force_copy) {
+                return AEGIS_SPEC_E_LIMIT;
+            }
+            out->workspace_force_copy = 1;
+            break;
         case AEGIS_KEY_CGROUP_FD:
             if (have_cgfd) {
                 return AEGIS_SPEC_E_DUPLICATE;
@@ -292,6 +322,10 @@ int aegis_spec_parse(const uint8_t *buf, size_t len, aegis_spec_t *out)
         }
     }
 
+    if ((have_wlower != 0) != (have_wrw != 0)) {
+        return AEGIS_SPEC_E_MISSING; /* workspace binds are all-or-nothing */
+    }
+    out->has_workspace = have_wlower;
     if (out->argc == 0U || !have_root || !have_host || !have_rootsz || !have_tmpsz) {
         return AEGIS_SPEC_E_MISSING;
     }
