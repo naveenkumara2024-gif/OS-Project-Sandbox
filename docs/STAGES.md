@@ -26,3 +26,5 @@ Single source of truth for stage state (CLAUDE.md §0.1). Statuses: `planned`, `
 - 2026-10-11: Owner switched to Linux npm. `npm ci --ignore-scripts` and `npm run check` pass (6 files, 52 tests), `npm audit` 0 vulnerabilities. Remaining gate gap: Clang `debug-asan` link (missing `libclang-rt`). Stage stays `verifying`.
 
 - 2026-10-11: Owner installed `libclang-rt-21-dev`; Clang `debug-asan` builds and probes cleanly. Last gate item met. Stage 0 -> `done`. Waiting on owner to set Stage 1 to `implement`.
+
+- 2026-10-11: Pre-Stage-1 audit (owner asked to confirm Stage 0 is complete). Stage 0 set to `in-progress` per CLAUDE.md 0.8 and back to `done`: restored the Results section of the report (lost in `6013881`), added the full probe JSON, and corrected `docs/SETUP-WSL2.md` (Linux npm check, Clang sanitizer runtime, lockfile install). Documentation only; no code changed.

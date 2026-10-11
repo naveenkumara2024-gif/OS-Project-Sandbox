@@ -17,7 +17,12 @@ steps to this file when they need them.
 ```bash
 sudo apt update
 sudo apt install build-essential clang clang-tidy clang-format
+sudo apt install libclang-rt-$(clang --version | sed -n 's/.*version \([0-9]*\)\..*/\1/p')-dev
 ```
+
+The second command installs the Clang sanitizer runtime that matches your Clang (for example
+`libclang-rt-21-dev`). Without it the Clang `debug-asan` build fails to link with
+`cannot find libclang_rt.asan.a`; the GCC `debug-asan` build is unaffected.
 
 No `libseccomp-dev`, `rsync` or fuzzing runtime is needed yet; later stages list theirs.
 
@@ -37,16 +42,14 @@ git switch stage/0-scaffold
 
 ## 5. Install dev dependencies (exact pins, no install scripts)
 
-`package.json` deliberately lists no dependency versions, so none are guessed. Install them once;
-npm records the exact resolved versions and writes `package-lock.json`:
+The exact versions are pinned in `package.json` and `package-lock.json`. Install from the lockfile:
 
 ```bash
-npm install --save-dev --save-exact --ignore-scripts \
-  typescript @types/node vitest eslint typescript-eslint prettier fast-check
+npm ci --ignore-scripts
 ```
 
-Then commit `package.json` and `package-lock.json` on `stage/0-scaffold` (or tell Claude the
-result and it will).
+To add a dependency later (only with owner approval, CLAUDE.md 2 and 6.7):
+`npm install --save-dev --save-exact --ignore-scripts <package>`.
 
 ## 6. Verify Stage 0
 
