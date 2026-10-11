@@ -4,7 +4,7 @@ Single source of truth for stage state (CLAUDE.md §0.1). Statuses: `planned`, `
 
 | # | Stage | Status | Prompt | Report | Notes |
 | --- | --- | --- | --- | --- | --- |
-| 0 | Scaffold | verifying | [stage-0-scaffold.md](prompts/stage-0-scaffold.md) | [stage-0.md](reports/stage-0.md) | All gate items verified on WSL2 (`npm run check`: 52 tests pass; GCC release and debug-asan; probe) except Clang `debug-asan`, which needs `libclang-rt-21-dev`. Waiting on owner: install it or accept GCC-only ASan |
+| 0 | Scaffold | done | [stage-0-scaffold.md](prompts/stage-0-scaffold.md) | [stage-0.md](reports/stage-0.md) | All gate items met and measured on WSL2 (see report). Branch `stage/0-scaffold` |
 | 1 | Core cell | planned | | | |
 | 2 | Limits and receipts | planned | | | |
 | 3 | Workspace | planned | | | |
@@ -24,3 +24,5 @@ Single source of truth for stage state (CLAUDE.md §0.1). Statuses: `planned`, `
 - 2026-10-11: Verification run in WSL2. Fixed duplicate `_GNU_SOURCE` (blocked every native build), two tsc errors, prettier and clang-tidy config. Stage stays `verifying`: Vitest cannot run (Windows-installed `node_modules`) and `npm ci` was not run; details in `docs/reports/stage-0.md`.
 
 - 2026-10-11: Owner switched to Linux npm. `npm ci --ignore-scripts` and `npm run check` pass (6 files, 52 tests), `npm audit` 0 vulnerabilities. Remaining gate gap: Clang `debug-asan` link (missing `libclang-rt`). Stage stays `verifying`.
+
+- 2026-10-11: Owner installed `libclang-rt-21-dev`; Clang `debug-asan` builds and probes cleanly. Last gate item met. Stage 0 -> `done`. Waiting on owner to set Stage 1 to `implement`.

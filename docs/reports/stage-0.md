@@ -3,9 +3,9 @@
 - Branch: `stage/0-scaffold`, created from `main` at `a3ddec7`.
 - Prompt: `docs/prompts/stage-0-scaffold.md`, approved 2026-10-11, SHA-256
   `ba14a95a7d0abad6b9d80ed37ae5a6cc56d61346ed69ec1e1d7148ec07be4b5a`.
-- **Status: VERIFIED except the Clang `debug-asan` build (2026-10-11, WSL2, Node 22.22.1, npm
-  9.2.0).** `npm ci --ignore-scripts` and `npm run check` pass on Linux npm. Stage 0 stays
-  `verifying` only until `libclang-rt-21-dev` is installed and the Clang ASan build is run.
+- **Status: DONE (2026-10-11, WSL2, Node 22.22.1, npm 9.2.0).** All gate items in "Results" are
+  measured. Branch `stage/0-scaffold`; this report is in the final commit, whose parent is
+  `6013881` (`git log -1` on the branch shows the tip).
 
 ## What changed
 
@@ -49,8 +49,6 @@
 
 ## Open questions
 
-1. Install the Clang ASan runtime (`libclang-rt-21-dev`, needs `sudo`) so gate item 3 (`debug-asan`
-   under both GCC and Clang) can be met; then Claude re-runs `node scripts/build-native.mjs all
-   --cc=clang` and the helper probe. Alternatively, the owner may accept GCC-only ASan; if so, record
-   it here and in `docs/STAGES.md`.
-2. Branch `stage/0-scaffold` is based on `main` `a3ddec7`; merging is the owner's decision.
+1. Branch `stage/0-scaffold` is based on `main` `a3ddec7`; merging is the owner's decision.
+2. Stage 2 will need cgroup delegation (`cgroup.procs` is not writable by the user today); see
+   `docs/SETUP-WSL2.md`.
