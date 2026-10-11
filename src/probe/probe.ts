@@ -172,7 +172,11 @@ export async function collectProbe(env: ProbeEnv): Promise<ProbeReport> {
   );
   add(
     'cgroup.v1_lines',
-    fromResult('/proc/self/cgroup (v1 hierarchy lines)', selfCgroup, (t) => parseSelfCgroup(t).v1Lines),
+    fromResult(
+      '/proc/self/cgroup (v1 hierarchy lines)',
+      selfCgroup,
+      (t) => parseSelfCgroup(t).v1Lines,
+    ),
   );
 
   const dir = mountPoint !== null && selfPath !== null ? posix.join(mountPoint, selfPath) : null;
@@ -187,7 +191,10 @@ export async function collectProbe(env: ProbeEnv): Promise<ProbeReport> {
     const controllers = posix.join(dir, 'cgroup.controllers');
     const subtree = posix.join(dir, 'cgroup.subtree_control');
     const procs = posix.join(dir, 'cgroup.procs');
-    add('cgroup.controllers', fromResult(controllers, env.readText(controllers), parseControllerList));
+    add(
+      'cgroup.controllers',
+      fromResult(controllers, env.readText(controllers), parseControllerList),
+    );
     add('cgroup.subtree_control', fromResult(subtree, env.readText(subtree), parseControllerList));
     // cgroup.procs is the file a delegated owner must be able to write to move processes in.
     add('cgroup.own_dir_writable', writableFact(`access(${procs}, W_OK)`, env.isWritable(procs)));
@@ -204,7 +211,10 @@ export async function collectProbe(env: ProbeEnv): Promise<ProbeReport> {
       parseFilesystems(t).includes('overlay'),
     ),
   );
-  add('cwd.statfs_type', fromResult('statfs(cwd).type', env.statfsType(env.cwd()), (n) => n));
+  add(
+    'cwd.statfs_type',
+    fromResult('statfs(cwd).type', env.statfsType(env.cwd()), (n) => n),
+  );
   add('mnt_c.present', plain(env.exists('/mnt/c'), 'exists(/mnt/c)'));
   add(
     'wsl.interop_entries',
@@ -284,8 +294,8 @@ export function realProbeEnv(): ProbeEnv {
     osRelease: () => release(),
     arch: () => arch(),
     nodeVersion: () => process.versions.node,
-    uid: () => (linux ? process.getuid() : null),
-    gid: () => (linux ? process.getgid() : null),
+    uid: () => (linux ? (process.getuid?.() ?? null) : null),
+    gid: () => (linux ? (process.getgid?.() ?? null) : null),
     cwd: () => process.cwd(),
     now: () => new Date(),
     async helperProbe(): Promise<HelperOutcome> {
