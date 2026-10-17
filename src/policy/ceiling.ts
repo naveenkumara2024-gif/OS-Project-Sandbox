@@ -45,6 +45,8 @@ const ceilingLimits = z.strictObject({
   disk_mb: ceilingLimit('disk_mb'),
 });
 
+const port = z.number().int().min(1).max(65_535);
+
 const policyFileSchema = z.strictObject({
   _comment: z.string().max(4096).optional(),
   ingest_roots: pathList.default([]),
@@ -53,7 +55,16 @@ const policyFileSchema = z.strictObject({
   ceiling: z.strictObject({
     limits: ceilingLimits,
     network_allow: z.array(hostnameSchema).max(256),
+    // Ports the egress broker will CONNECT to (Stage 5); every other port is refused.
+    network_ports: z.array(port).max(16),
     require_at_least: z.array(layerSchema).max(RECEIPT_LAYERS.length),
+    // Admission control (Stage 5): how many cells run at once and how much memory they may add up
+    // to, so parallel runs cannot exhaust the VM.
+    max_cells: z.number().int().min(1).max(64),
+    memory_budget_mb: z.number().int().min(64).max(1_048_576),
+    // Sessions (Stage 5): how many may exist and how long an idle one is kept.
+    max_sessions: z.number().int().min(1).max(256),
+    session_idle_s: z.number().int().min(10).max(604_800),
   }),
 });
 
@@ -62,6 +73,12 @@ export interface Ceiling {
   readonly limits: Limits;
   /** Lower-case hostnames a manifest may list; anything else is removed and reported. */
   readonly networkAllow: readonly string[];
+  /** TCP ports the egress broker may connect to. */
+  readonly networkPorts: readonly number[];
+  readonly maxCells: number;
+  readonly memoryBudgetMb: number;
+  readonly maxSessions: number;
+  readonly sessionIdleS: number;
   /** Layers every run must have, whatever its own manifest asks for. */
   readonly requireAtLeast: readonly ReceiptLayer[];
 }
@@ -108,6 +125,11 @@ export function parsePolicyFile(bytes: Uint8Array): Result<PolicyFile> {
     ceiling: {
       limits,
       networkAllow: [...new Set(d.ceiling.network_allow)].sort(),
+      networkPorts: [...new Set(d.ceiling.network_ports)].sort((a, b) => a - b),
+      maxCells: d.ceiling.max_cells,
+      memoryBudgetMb: d.ceiling.memory_budget_mb,
+      maxSessions: d.ceiling.max_sessions,
+      sessionIdleS: d.ceiling.session_idle_s,
       requireAtLeast: [...new Set(d.ceiling.require_at_least)].sort(),
     },
   });

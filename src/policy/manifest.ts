@@ -40,7 +40,9 @@ export const manifestRequestSchema = z.strictObject({
   // against the ceiling, and reported, but grants no network access yet.
   network: z
     .strictObject({
-      mode: z.literal('none').optional(),
+      // "brokered" gives the cell one audited path to allowlisted hosts through the egress broker
+      // (Stage 5); "none" (the default) gives it no interface at all.
+      mode: z.enum(['none', 'brokered']).optional(),
       allow: z.array(hostnameSchema).max(MAX_ALLOW_DOMAINS).optional(),
     })
     .optional(),
@@ -51,6 +53,7 @@ export const manifestRequestSchema = z.strictObject({
 /** What the request asked for, after schema validation and before the ceiling is applied. */
 export interface ManifestRequest {
   readonly limits: Readonly<Partial<Record<LimitName, number>>>;
+  readonly networkMode: 'none' | 'brokered';
   readonly networkAllow: readonly string[];
   /** Null when the request did not list `require`, so the default applies. */
   readonly require: readonly ReceiptLayer[] | null;
@@ -58,6 +61,7 @@ export interface ManifestRequest {
 
 export const EMPTY_MANIFEST_REQUEST: ManifestRequest = {
   limits: {},
+  networkMode: 'none',
   networkAllow: [],
   require: null,
 };
@@ -70,6 +74,7 @@ export function toManifestRequest(m: z.infer<typeof manifestRequestSchema>): Man
   }
   return {
     limits,
+    networkMode: m.network?.mode ?? 'none',
     networkAllow: m.network?.allow ?? [],
     require: m.require ?? null,
   };
@@ -77,7 +82,7 @@ export function toManifestRequest(m: z.infer<typeof manifestRequestSchema>): Man
 
 export interface ResolvedManifest {
   readonly limits: Limits;
-  readonly network: { readonly mode: 'none'; readonly allow: readonly string[] };
+  readonly network: { readonly mode: 'none' | 'brokered'; readonly allow: readonly string[] };
   readonly workspace: { readonly mode: 'overlay' };
   /** Sorted, without duplicates: the request's set plus the ceiling's `require_at_least`. */
   readonly require: readonly ReceiptLayer[];
@@ -121,13 +126,21 @@ export function resolveManifest(req: ManifestRequest, ceiling: Ceiling): Resolut
     }
   }
 
+  // A brokered cell with nothing left on its allowlist would have a proxy that refuses everything;
+  // it becomes a plain air-gapped cell, and the receipt says so.
+  let mode = req.networkMode;
+  if (mode === 'brokered' && allow.length === 0) {
+    mode = 'none';
+    clamped.push({ field: 'network.mode', requested: 'brokered', granted: 'none' });
+  }
+
   const require = [
     ...new Set<ReceiptLayer>([...(req.require ?? DEFAULT_REQUIRE), ...ceiling.requireAtLeast]),
   ].sort();
 
   const manifest: ResolvedManifest = {
     limits,
-    network: { mode: 'none', allow },
+    network: { mode, allow },
     workspace: { mode: 'overlay' },
     require,
   };

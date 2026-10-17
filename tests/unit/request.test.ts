@@ -11,7 +11,12 @@ describe('parseRunRequest', () => {
     if (!r.ok) return;
     expect(r.value.id).toBe('r1');
     expect(r.value.command).toEqual(['/usr/bin/echo', 'hi']);
-    expect(r.value.manifest).toEqual({ limits: {}, networkAllow: [], require: null });
+    expect(r.value.manifest).toEqual({
+      limits: {},
+      networkMode: 'none',
+      networkAllow: [],
+      require: null,
+    });
     expect(r.value.env.size).toBe(0);
   });
 
@@ -73,7 +78,10 @@ describe('parseRunRequest', () => {
     ['fractional limit', { ...ok, limits: { wall_ms: 1.5 } }],
     ['unknown manifest key', { ...ok, manifest: { extra: 1 } }],
     ['unknown manifest limit', { ...ok, manifest: { limits: { cores: 4 } } }],
-    ['network mode other than none', { ...ok, manifest: { network: { mode: 'allowlist' } } }],
+    [
+      'network mode other than none or brokered',
+      { ...ok, manifest: { network: { mode: 'allowlist' } } },
+    ],
     ['bad domain', { ...ok, manifest: { network: { allow: ['not a host'] } } }],
     ['domain with a path', { ...ok, manifest: { network: { allow: ['a.example/x'] } } }],
     ['unknown layer in require', { ...ok, manifest: { require: ['telepathy'] } }],
