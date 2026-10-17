@@ -9,11 +9,13 @@
   ADR 0006, and one hypothesis in section 4.2 was refuted (see "Deviations").
 - Environment: WSL2 `6.18.33.2-microsoft-standard-WSL2`, Ubuntu 26.04 LTS, Node 22.22.1, GCC
   15.2.0, Clang 21.1.8. Landlock ABI 7.
-- **Status: VERIFYING, not done.** Every acceptance criterion below is met and measured, but the
-  work is **not committed**: the commit was refused by the tool-permission classifier (no reason
-  given) and Claude did not work around it. CLAUDE.md 0.6 item 7 therefore cannot be met yet. The
-  last commit on the branch is the prompt commit `4ec41d5`; the whole implementation is in the
-  working tree. See "Open questions" item 1.
+- **Status: DONE.** Every acceptance criterion below is met and measured. The implementation is
+  committed on `stage/4-hardening` as `61922bb` ("implementation for stage 4", committed by the
+  owner after the first commit attempt was refused by the permission classifier and the second
+  failed for lack of a git identity); this report and the `done` state are the next commit. The
+  tip was re-verified after the commit: `npm run check` green (47 files, 451 passed, 11 skipped)
+  and `node scripts/check-native.mjs` clean, with a clean tree apart from this report and
+  `docs/STAGES.md`.
 
 ## What changed
 
@@ -197,10 +199,9 @@ Stated, not hidden (this repeats the prompt's 4.9 with the measured additions):
 
 ## Open questions for the owner
 
-1. **The commit was refused** by the permission classifier (no reason was given), although CLAUDE.md
-   10 authorises local commits on the stage branch. Please either allow the commit (a Bash
-   permission rule for `git add`/`git commit`, or tell me to try again), or commit it yourself.
-   Until it is committed the stage cannot be `done`.
+1. ~~The commit was refused~~ Resolved: the owner set a git identity and committed
+   (`61922bb`). The cause of the first refusal (the permission classifier gave no reason) was never
+   found; it is worth knowing about if it happens again.
 2. **Level semantics**: should the isolation level count only the tiers a run attempted (so a
    hardened run with no workspace reports 4), or keep the consecutive-tier rule with a workspace
    required for 3 and 4? Changing it is a one-line change in `src/probe/isolation.ts` plus ADR 0003.
@@ -214,6 +215,6 @@ Stated, not hidden (this repeats the prompt's 4.9 with the measured additions):
 
 ## Rollback
 
-All work is on `stage/4-hardening` (uncommitted for now). Back out by deleting the branch or
-`git checkout -- .` and removing the new files. No cgroup configuration, system file or package was
+All work is on `stage/4-hardening` (implementation `61922bb`, then this report). Back out with
+`git revert` or by deleting the branch. No cgroup configuration, system file or package was
 touched; cell directories and cgroups follow the Stage 2 and 3 cleanup rules (checked: none left).
