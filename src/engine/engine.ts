@@ -328,6 +328,7 @@ export class Engine {
           record.events.push(e);
         },
         signal: record.controller.signal,
+        runId: record.id,
       });
     } finally {
       admitted.value();

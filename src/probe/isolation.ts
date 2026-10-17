@@ -13,9 +13,12 @@ export type ReceiptLayer = (typeof RECEIPT_LAYERS)[number];
 
 export type ReceiptLayers = Readonly<Record<ReceiptLayer, boolean>>;
 
-/** Every layer a run can establish without asking for a workspace (everything but `overlay`). */
+/**
+ * Every layer a plain run (no workspace, no network) establishes: everything but `overlay`, and
+ * `loopback` and `broker`, which only a brokered cell has.
+ */
 export const NON_WORKSPACE_LAYERS: readonly ReceiptLayer[] = RECEIPT_LAYERS.filter(
-  (l) => l !== 'overlay',
+  (l) => l !== 'overlay' && l !== 'loopback' && l !== 'broker',
 );
 
 /**

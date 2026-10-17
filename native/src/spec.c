@@ -334,6 +334,20 @@ int aegis_spec_parse(const uint8_t *buf, size_t len, aegis_spec_t *out)
             out->ablate_mask = rd32(body);
             break;
 #endif
+        case AEGIS_KEY_BROKER_SOCKET:
+            if (out->broker_socket != NULL) {
+                return AEGIS_SPEC_E_DUPLICATE;
+            }
+            rc = take_string(body, rlen, &s);
+            if (rc != 0) {
+                return rc;
+            }
+            rc = check_abs_path(s);
+            if (rc != 0) {
+                return rc;
+            }
+            out->broker_socket = s;
+            break;
         case AEGIS_KEY_CGROUP_FD:
             if (have_cgfd) {
                 return AEGIS_SPEC_E_DUPLICATE;

@@ -119,12 +119,17 @@ export function openEngine(
   if (!helper.ok) return { ...helper, kind: 'helper' };
   const exec = checkExecutable(helper.value.path);
   if (!exec.ok) return { ...exec, kind: 'helper' };
+  // The egress audit copy goes to the state directory when there is one (a brokered cell only).
+  const state = stateDir(env);
   return ok({
     engine: new Engine({
       helperPath: helper.value.path,
       planEnv: realPlanEnv(),
       policy: policy.value,
       logger,
+      ...(state.ok
+        ? { runCellExtras: { broker: { auditFile: join(state.value, 'audit.jsonl') } } }
+        : {}),
     }),
     policy: policy.value,
     helperPath: helper.value.path,

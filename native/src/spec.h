@@ -57,7 +57,11 @@ enum aegis_spec_key {
     /* u32 bitmask of enum aegis_require_bit (never OVERLAY): hardening layers to treat as
      * unavailable without trying them. Accepted only by builds compiled with AEGIS_ENABLE_ABLATION
      * (never `release`, CLAUDE.md 6.5); any other build rejects the key. */
-    AEGIS_KEY_ABLATE_MASK = 15
+    AEGIS_KEY_ABLATE_MASK = 15,
+    /* host path of the broker's Unix socket. Its presence means a brokered cell: the socket is
+     * bound into the cell at /.aegis-broker.sock, loopback is brought up, and init starts the
+     * forwarder. */
+    AEGIS_KEY_BROKER_SOCKET = 16
 };
 
 /* Layers the helper itself can refuse to run without (the bits of REQUIRE_MASK). The control plane
@@ -122,6 +126,7 @@ typedef struct {
     int workspace_force_copy;
     uint32_t require_mask; /* enum aegis_require_bit; AEGIS_REQ_DEFAULT when the key is absent */
     uint32_t ablate_mask;  /* ablation builds only */
+    const char *broker_socket; /* NULL unless the cell is brokered */
 } aegis_spec_t;
 
 /* Returns 0 on success or a negative enum aegis_spec_error value. */

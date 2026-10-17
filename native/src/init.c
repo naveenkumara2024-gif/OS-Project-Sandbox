@@ -2,12 +2,14 @@
 #include "init.h"
 
 #include "caps.h"
+#include "fwd.h"
 #include "landlock.h"
 #include "seccomp.h"
 #include "spec.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -118,9 +120,11 @@ static int harden_payload(const aegis_init_opts_t *opts)
     int ll_errno = 0;
     aegis_landlock_info_t info;
     memset(&info, 0, sizeof info);
+    /* A brokered payload may connect to the forwarder's port and to nothing else. */
+    const aegis_landlock_plan_t plan = {1, opts->broker ? AEGIS_FWD_PORT : 0, 0};
     if (ablated(opts, AEGIS_REQ_LANDLOCK)) {
         ll_errno = EOPNOTSUPP;
-    } else if (aegis_landlock_apply(&info) != 0) {
+    } else if (aegis_landlock_apply(&plan, &info) != 0) {
         ll_errno = errno != 0 ? errno : EPERM;
     }
     if (ll_errno == 0) {
@@ -151,6 +155,47 @@ static int harden_payload(const aegis_init_opts_t *opts)
         }
     }
     return 0;
+}
+
+/*
+ * Starts the egress forwarder (a child of this process, same image) and waits until it reports
+ * that it is listening. Returns 0, or an errno. The forwarder has its own Landlock domain and the
+ * seccomp filter; see fwd.c.
+ */
+static int start_forwarder(void)
+{
+    int fds[2];
+    if (pipe2(fds, O_CLOEXEC) != 0) {
+        return errno;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        int e = errno;
+        close(fds[0]);
+        close(fds[1]);
+        return e;
+    }
+    if (pid == 0) {
+        close(fds[0]);
+        aegis_fwd_run(fds[1]);
+    }
+    close(fds[1]);
+    struct pollfd p = {fds[0], POLLIN, 0};
+    int pr;
+    do {
+        pr = poll(&p, 1, 5000);
+    } while (pr < 0 && errno == EINTR);
+    char msg[2] = {0, 0};
+    ssize_t n = pr > 0 ? read(fds[0], msg, sizeof msg) : -1;
+    close(fds[0]);
+    if (pr > 0 && n >= 1 && msg[0] == 'R') {
+        return 0;
+    }
+    (void)kill(pid, SIGKILL);
+    if (pr == 0) {
+        return ETIMEDOUT;
+    }
+    return (n >= 2 && msg[0] == 'F' && msg[1] != 0) ? (int)(unsigned char)msg[1] : EPROTO;
 }
 
 static int build_mask(sigset_t *m)
@@ -233,6 +278,14 @@ int aegis_init_run(char *const *payload_argv, const aegis_init_opts_t *opts)
         return EXIT_INTERNAL;
     }
     status_line("layer init ok\n");
+
+    if (opts->broker) {
+        int fe = start_forwarder();
+        report_layer("broker", fe == 0, fe);
+        if (fe != 0) {
+            return EXIT_INTERNAL; /* a brokered cell without its broker path does not run */
+        }
+    }
 
     pid_t payload = fork();
     if (payload < 0) {

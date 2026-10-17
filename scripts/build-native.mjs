@@ -25,6 +25,7 @@ const helperSources = src([
   'caps.c',
   'seccomp.c',
   'landlock.c',
+  'fwd.c',
 ]);
 
 // -U before -D: some distributions predefine _FORTIFY_SOURCE, and -Werror would reject the clash.

@@ -19,6 +19,8 @@ export const HELPER_LAYERS = [
   'no_new_privs',
   'seccomp',
   'landlock',
+  'loopback',
+  'broker',
 ] as const;
 
 export type HelperLayer = (typeof HELPER_LAYERS)[number];

@@ -16,6 +16,9 @@ typedef struct {
     /* Ablation builds only: enum aegis_require_bit layers to treat as unavailable without trying
      * them (tests). */
     uint32_t ablate_mask;
+    /* Brokered cell: start the egress forwarder before the payload and let the payload connect to
+     * its port. A forwarder that cannot be started stops the run. */
+    int broker;
 } aegis_init_opts_t;
 
 /*

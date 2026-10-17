@@ -41,6 +41,12 @@ const seeds = {
   },
   with_require: { ...base, cgroupFd: true, requireMask: 0b00111 },
   with_all_require_and_ablate: { ...base, requireMask: 0b11111, ablateMask: 0b01101 },
+  with_broker: {
+    ...base,
+    cgroupFd: true,
+    requireMask: 0b00111,
+    brokerSocket: '/tmp/aegis-cell-1-abc/broker.sock',
+  },
   many_args: {
     ...base,
     argv: ['/bin/sh', ...Array.from({ length: 60 }, (_, i) => `arg${String(i)}`)],

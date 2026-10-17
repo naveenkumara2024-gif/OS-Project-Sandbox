@@ -21,6 +21,9 @@ import {
   writeInlineFiles,
   type IngestPolicy,
 } from '../stage/ingest.js';
+import { AuditLog, fileAuditSink, type AuditEntry } from '../broker/audit.js';
+import { hostRangesFromRoutes, type Cidr4 } from '../broker/address-policy.js';
+import { Broker, type BrokerLimits, type Dialer, type Resolver } from '../broker/broker.js';
 import { OutputCoalescer, type CellEvent, type LimitName } from '../engine/events.js';
 import { writeFilesToUpper } from '../stage/session-files.js';
 import { planWorkspace } from './workspace-plan.js';
@@ -43,6 +46,8 @@ import { planUsr, type PlanEnv } from './rootfs-plan.js';
 /** Fixed, not caller-controlled (CLAUDE.md 6.1 item 5); the request may add other names. */
 export const CELL_PATH = '/usr/bin:/bin';
 export const CELL_HOSTNAME = 'aegis';
+/** Where the in-cell forwarder listens (native/src/fwd.h). */
+const FORWARDER_PORT = 3128;
 export const ROOT_TMPFS_BYTES = 64 * 1024 * 1024;
 
 // Best-effort: do not offer the control plane's own runtime inside a cell (CLAUDE.md 6.1 item 2).
@@ -88,8 +93,17 @@ export interface CellResult {
   /** SHA-256 of the policy file as read, so a receipt names the policy that clamped it. */
   readonly ceiling_sha256: string;
   readonly clamped: readonly Clamp[];
-  /** Egress does not exist before Stage 5, whatever the allowlist says. */
-  readonly network: { readonly mode: 'none'; readonly egress: false };
+  /**
+   * The cell's path to the world. `none`: no interface at all. `brokered`: loopback and a forwarder
+   * to the egress broker; `egress` is true only if both were observed, and `audit` lists every
+   * attempt the broker saw (allowed or denied).
+   */
+  readonly network: {
+    readonly mode: 'none' | 'brokered';
+    readonly egress: boolean;
+    readonly audit?: readonly AuditEntry[];
+    readonly audit_dropped?: number;
+  };
   /** Present only when the request carried a workspace or inline files (Stage 3). */
   readonly workspace?: 'overlay' | 'copy';
   readonly changes?: readonly Change[];
@@ -130,6 +144,16 @@ export interface RunCellDeps {
   readonly onEvent?: (e: CellEvent) => void;
   /** Aborting it cancels the run with the same kill procedure as a timeout. */
   readonly signal?: AbortSignal;
+  /** The id the audit log and the broker's records carry; defaults to the request id. */
+  readonly runId?: string;
+  /** Egress broker settings: file for the audit copy, and test seams for DNS and dialing. */
+  readonly broker?: {
+    readonly auditFile?: string;
+    readonly resolver?: Resolver;
+    readonly dial?: Dialer;
+    readonly hostRanges?: readonly Cidr4[];
+    readonly limits?: Partial<BrokerLimits>;
+  };
 }
 
 interface Governed {
@@ -164,13 +188,14 @@ function hintLimits(l: Limits): HintLimits {
 
 function governanceEcho(
   g: Governed,
+  network: CellResult['network'] = { mode: 'none', egress: false },
 ): Pick<CellResult, 'manifest' | 'manifest_sha256' | 'ceiling_sha256' | 'clamped' | 'network'> {
   return {
     manifest: g.manifest,
     manifest_sha256: g.sha256,
     ceiling_sha256: g.ceilingSha256,
     clamped: g.clamped,
-    network: { mode: 'none', egress: false },
+    network,
   };
 }
 
@@ -297,6 +322,50 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
     return rootDir;
   }
 
+  // 2a. The egress broker (Stage 5), for a brokered manifest only: a Unix socket in the per-cell
+  // directory that the helper binds into the cell. Declared after `dir`, so it is closed (and its
+  // socket removed) before the directory is.
+  const brokered = gov.manifest.network.mode === 'brokered';
+  const audit = new AuditLog(
+    deps.broker?.auditFile === undefined
+      ? null
+      : fileAuditSink(deps.broker.auditFile, {
+          run: deps.runId ?? req.id,
+          manifest_sha256: gov.sha256,
+        }),
+  );
+  let brokerSocket: string | null = null;
+  let broker: Broker | null = null;
+  if (brokered) {
+    const hostRanges =
+      deps.broker?.hostRanges ??
+      (() => {
+        try {
+          return hostRangesFromRoutes(readFileSync('/proc/net/route', 'utf8'));
+        } catch {
+          return [];
+        }
+      })();
+    const created = await Broker.create({
+      socketPath: join(dir.path, 'broker.sock'),
+      run: deps.runId ?? req.id,
+      manifestSha256: gov.sha256,
+      allow: gov.manifest.network.allow,
+      ports: deps.governance.ceiling.networkPorts,
+      hostRanges,
+      audit,
+      ...(deps.broker?.resolver === undefined ? {} : { resolver: deps.broker.resolver }),
+      ...(deps.broker?.dial === undefined ? {} : { dial: deps.broker.dial }),
+      ...(deps.broker?.limits === undefined ? {} : { limits: deps.broker.limits }),
+    });
+    if (!created.ok) {
+      return ok(refusal(req, gov, 'broker', created.error.code, cell.layers));
+    }
+    broker = created.value;
+    brokerSocket = created.value.socketPath;
+  }
+  await using brokerGuard = broker;
+
   // 2b. Workspace ingest (Stage 3): a host source and/or inline files staged as the overlay's
   // lower layer. The workspace directory is deliberately NOT disposed with `dir`: it must survive
   // past this run for a later `aegis commit`/`aegis discard`.
@@ -376,7 +445,13 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
     }
   }
 
-  const env = [`PATH=${CELL_PATH}`, ...[...req.env].map(([k, v]) => `${k}=${v}`)];
+  // A brokered cell is told where its proxy is. The names and the value are fixed here; a request
+  // cannot set them (src/gateway/request.ts reserves the upper-case names).
+  const proxy = `http://127.0.0.1:${String(FORWARDER_PORT)}`;
+  const proxyEnv = brokered
+    ? [`HTTP_PROXY=${proxy}`, `HTTPS_PROXY=${proxy}`, `http_proxy=${proxy}`, `https_proxy=${proxy}`]
+    : [];
+  const env = [`PATH=${CELL_PATH}`, ...proxyEnv, ...[...req.env].map(([k, v]) => `${k}=${v}`)];
   const spec: LaunchSpec = {
     argv: req.command,
     env,
@@ -390,6 +465,7 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
     cgroupFd: true,
     requireMask: requireMaskOf(gov.manifest.require),
     ...(ablateMask !== 0 ? { ablateMask } : {}),
+    ...(brokerSocket !== null ? { brokerSocket } : {}),
     ...(workspacePaths !== null
       ? {
           workspace: planWorkspace(
@@ -469,6 +545,7 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
     stuck = !(await cell.waitEmpty(EMPTY_WAIT_MS));
   }
   const stats = cell.stats();
+  await brokerGuard?.close();
 
   const parsed = parseStatus(o.status);
   if (!parsed.ok) {
@@ -518,11 +595,23 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
   // output is withheld rather than presented as the result of a compliant run.
   // Only a payload that actually started can have violated it; a cell that was killed or failed
   // before `started` never ran anything, and its own termination already says why.
-  const missing = gov.manifest.require.find((l) => !layers[l]);
+  const missing = [
+    ...gov.manifest.require,
+    ...(brokered ? (['loopback', 'broker'] as const) : []),
+  ].find((l) => !layers[l]);
   const violated = missing !== undefined && records.some((r) => r.kind === 'started') && !stuck;
   if (violated) {
     termination = { cause: 'isolation_unavailable', layer: missing, errno: errnoNumber('EPROTO') };
   }
+
+  const networkEcho: CellResult['network'] = brokered
+    ? {
+        mode: 'brokered',
+        egress: layers.loopback && layers.broker && !violated,
+        audit: audit.entries,
+        ...(audit.dropped > 0 ? { audit_dropped: audit.dropped } : {}),
+      }
+    : { mode: 'none', egress: false };
 
   const base = {
     id: req.id,
@@ -542,7 +631,7 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
       ? 'the cell did not empty after the kill; it was left for the reaper'
       : hintFor(termination, hintLimits(lim)),
     isolation: { level: isolationLevel(layers), layers, landlock_abi: landlockAbi },
-    ...governanceEcho(gov),
+    ...governanceEcho(gov, networkEcho),
     ...(workspacePaths !== null ? { workspace: workspaceMode ?? 'copy', changes } : {}),
   };
   if (termination.cause === 'isolation_unavailable') {

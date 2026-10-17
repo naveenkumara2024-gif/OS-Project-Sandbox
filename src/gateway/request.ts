@@ -23,6 +23,16 @@ const MAX_FILES = 256;
 const MAX_FILE_BYTES = 1024 * 1024;
 const noNulPath = (s: string): boolean => !s.includes('\0') && !s.startsWith('/') && s !== '';
 const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/;
+// Names the engine sets itself (PATH, and the proxy variables of a brokered cell); a request
+// cannot override them.
+const RESERVED_ENV = new Set([
+  'PATH',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'FTP_PROXY',
+]);
 
 const noNul = (s: string): boolean => !s.includes('\0');
 const withinBytes = (s: string): boolean => Buffer.byteLength(s, 'utf8') <= MAX_ARG_BYTES;
@@ -113,7 +123,7 @@ export function parseRunRequest(input: Buffer | string): Result<RunRequest> {
   const env = new Map<string, string>();
   let envBytes = 0;
   for (const [name, value] of Object.entries(data.env)) {
-    if (!ENV_NAME.test(name) || name === 'PATH' || name.startsWith('LD_')) {
+    if (!ENV_NAME.test(name) || RESERVED_ENV.has(name) || name.startsWith('LD_')) {
       return invalid('env contains a name that is not allowed');
     }
     envBytes += Buffer.byteLength(name, 'utf8') + Buffer.byteLength(value, 'utf8') + 2;
