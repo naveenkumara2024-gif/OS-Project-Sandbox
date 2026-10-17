@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": ["mcp__aegis__run", "mcp__aegis__status", "mcp__aegis__diff", "mcp__aegis__discard"],
+    "ask": ["mcp__aegis__commit"]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /ABSOLUTE/PATH/TO/aegis-engine/dist/hooks/redirect-bash.js"
+          }
+        ]
+      }
+    ]
+  }
+}
