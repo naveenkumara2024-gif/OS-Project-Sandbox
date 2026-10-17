@@ -37,7 +37,7 @@ export interface EngineDeps {
 
 export interface RunInput {
   readonly request: RunRequest;
-  /** Continue this session. Omit to create one (when the request has files or a source). */
+  /** Continue this session; overrides `request.session`. Omit to use the request's. */
   readonly session?: string | null;
   /** `server`: generate unguessable ids (gateway, MCP). `request`: use the request id (CLI). */
   readonly idMode: 'server' | 'request';
@@ -188,7 +188,15 @@ export class Engine {
         );
       }
     }
-    await Promise.race([Promise.all(pending), new Promise((r) => setTimeout(r, 8000))]);
+    // Bounded wait. The timer is cleared afterwards: left running it would keep the process alive.
+    let limit: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.all(pending),
+      new Promise((resolve) => {
+        limit = setTimeout(resolve, 8000);
+      }),
+    ]);
+    clearTimeout(limit);
     this.#log.log({ event: 'engine_stopped' });
   }
 
@@ -200,13 +208,14 @@ export class Engine {
     // Which session does this run belong to?
     let sessionId: string | null = null;
     let continuing = false;
-    if (input.session !== undefined && input.session !== null) {
+    const wanted = input.session ?? req.session;
+    if (wanted !== null) {
       if (req.workspaceSource !== null) {
         return err('EINVAL', 'a workspace source can only be given when a session is created');
       }
-      const begun = this.#store.begin(input.session);
+      const begun = this.#store.begin(wanted);
       if (!begun.ok) return begun;
-      sessionId = input.session;
+      sessionId = wanted;
       continuing = true;
     } else if (req.workspaceSource !== null || req.files.length > 0) {
       const id = input.idMode === 'request' ? req.id : newSessionId();

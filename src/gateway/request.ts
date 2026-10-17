@@ -1,4 +1,6 @@
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
+import { SERVER_ID } from '../engine/session.js';
 import {
   manifestRequestSchema,
   requestedLimitsSchema,
@@ -36,7 +38,14 @@ const workspaceSchema = z.strictObject({
 });
 
 const requestSchema = z.strictObject({
-  id: z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/),
+  // A label for the caller's own bookkeeping. Optional: the engine's own run and session ids are
+  // the authoritative ones.
+  id: z
+    .string()
+    .regex(/^[A-Za-z0-9_.-]{1,64}$/)
+    .optional(),
+  // Continue this session (Stage 5). Only ids the engine generated are accepted.
+  session: z.string().regex(SERVER_ID).optional(),
   files: z.array(fileSchema).max(MAX_FILES).default([]),
   workspace: workspaceSchema.optional(),
   command: z
@@ -51,7 +60,10 @@ const requestSchema = z.strictObject({
 });
 
 export interface RunRequest {
+  /** The caller's label, or one generated here. */
   readonly id: string;
+  /** The session to continue, or null to start a new one (when there are files or a source). */
+  readonly session: string | null;
   readonly files: readonly { readonly path: string; readonly content: string }[];
   readonly workspaceSource: string | null;
   readonly command: readonly string[];
@@ -119,7 +131,8 @@ export function parseRunRequest(input: Buffer | string): Result<RunRequest> {
   );
 
   return ok({
-    id: data.id,
+    id: data.id ?? `q-${randomBytes(8).toString('hex')}`,
+    session: data.session ?? null,
     files: data.files,
     workspaceSource: data.workspace?.source ?? null,
     command: data.command,
