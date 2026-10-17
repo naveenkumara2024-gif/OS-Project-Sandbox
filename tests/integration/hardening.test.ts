@@ -293,13 +293,7 @@ describe('command line policy handling', () => {
   let dir = '';
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'aegis-cli-policy-'));
-    // The CLI runs from dist; build it so this test exercises the current source.
-    const tsc = join(root, 'node_modules', 'typescript', 'bin', 'tsc');
-    const built = spawnSync(process.execPath, [tsc, '-p', 'tsconfig.build.json'], {
-      cwd: root,
-      encoding: 'utf8',
-    });
-    if (built.status !== 0) throw new Error(`tsc failed: ${built.stdout}${built.stderr}`);
+    // dist/ is built once by tests/global-setup.ts.
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });

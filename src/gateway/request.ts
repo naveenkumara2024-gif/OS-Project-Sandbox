@@ -37,7 +37,7 @@ const workspaceSchema = z.strictObject({
   mode: z.enum(['overlay']).optional(),
 });
 
-const requestSchema = z.strictObject({
+export const requestSchema = z.strictObject({
   // A label for the caller's own bookkeeping. Optional: the engine's own run and session ids are
   // the authoritative ones.
   id: z

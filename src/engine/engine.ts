@@ -12,6 +12,7 @@ import { resolveManifest } from '../policy/manifest.js';
 import type { Policy } from '../policy/policy.js';
 import { nullLogger, type Logger } from '../util/logger.js';
 import { err, ok, type Result } from '../util/result.js';
+import { VERSION } from '../version.js';
 import { Admission, DEFAULT_WAIT_MS } from './admission.js';
 import { RunEvents } from './events.js';
 import { SessionStore } from './session-store.js';
@@ -135,6 +136,11 @@ export class Engine {
 
   get sessions(): SessionStore {
     return this.#store;
+  }
+
+  /** What a run may ask for, for a caller that wants to stay within it (read-only). */
+  get ceiling(): Policy['ceiling'] {
+    return this.#deps.policy.ceiling;
   }
 
   /** Starts the periodic sweep of idle sessions and old run records, and sweeps leftovers once. */
@@ -522,7 +528,7 @@ export class Engine {
     const now = this.#now();
     const c = this.#deps.policy.ceiling;
     return {
-      version: '0.0.0',
+      version: VERSION,
       delegated: this.#delegated(),
       cells: this.#admission.stats(),
       limits: { max_cells: c.maxCells, memory_budget_mb: c.memoryBudgetMb },

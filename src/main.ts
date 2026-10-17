@@ -2,7 +2,7 @@
 import { collectIsolationReport } from './probe/isolation-probe.js';
 import { collectProbe, realProbeEnv } from './probe/probe.js';
 import { checkExecutable, locateHelper, moduleDir } from './sys/helper.js';
-import { commitMode, diffMode, discardMode, runMode, serveMode } from './cli/commands.js';
+import { commitMode, diffMode, discardMode, mcpMode, runMode, serveMode } from './cli/commands.js';
 import { EX_SOFTWARE, EX_USAGE, loadActivePolicy, reapOrphans } from './cli/context.js';
 import { errnoCode } from './util/result.js';
 
@@ -47,10 +47,7 @@ async function main(argv: readonly string[]): Promise<number> {
   if (mode === 'discard') return discardMode(argv.slice(1));
   if (mode === 'serve') return serveMode(argv.slice(1));
 
-  if (mode === 'mcp') {
-    process.stderr.write('aegis mcp: not implemented yet\n');
-    return EX_USAGE;
-  }
+  if (mode === 'mcp') return mcpMode(argv.slice(1));
 
   process.stderr.write(
     'usage: aegis probe | run [--file <request.json>] | serve | mcp | diff <id> | commit <id> [--paths a,b] [--expect <sha256>] | discard <id>\n',

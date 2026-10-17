@@ -5,12 +5,21 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { Engine } from '../engine/engine.js';
 import type { RunEvent } from '../engine/events.js';
-import { isCleanRelativePath } from '../stage/ingest.js';
 import { nullLogger, type Logger } from '../util/logger.js';
 import { ensurePrivateDir } from '../util/state-dir.js';
 import { err, errFromException, ok, type Result } from '../util/result.js';
 import { DEFAULT_LIMITS, type GatewayLimits } from './limits.js';
 import { parseRunRequest } from './request.js';
+import {
+  codeFor,
+  commitBodySchema,
+  MESSAGES,
+  SESSION_ID,
+  STATUS,
+  type ErrorCode,
+} from './errors.js';
+
+export { codeFor };
 
 // The local gateway (prompt Stage 5 section 4.4): HTTP/1.1 over a Unix socket in a private
 // directory, mode 0600, no TCP listener. The request is untrusted (CLAUDE.md 6.4): sizes are
@@ -19,80 +28,7 @@ import { parseRunRequest } from './request.js';
 // request content.
 
 const ID = /^(?:s|r)-[0-9a-f]{32}$/;
-const SESSION = /^s-[0-9a-f]{32}$/;
-
-const commitBody = z.strictObject({
-  paths: z
-    .array(z.string().max(4096).refine(isCleanRelativePath, 'must be a clean relative path'))
-    .min(1)
-    .max(256),
-  expected_changes_sha256: z.string().regex(/^[0-9a-f]{64}$/),
-  dest: z.string().min(1).max(4096).optional(),
-  close: z.boolean().optional(),
-});
-
-type ErrorCode =
-  | 'invalid_request'
-  | 'too_large'
-  | 'not_found'
-  | 'busy'
-  | 'stale_diff'
-  | 'policy'
-  | 'isolation_unavailable'
-  | 'internal'
-  | 'unsupported'
-  | 'shutting_down';
-
-const MESSAGES: Record<ErrorCode, string> = {
-  invalid_request: 'the request is not valid',
-  too_large: 'the request or the run is larger than allowed',
-  not_found: 'no such run or session',
-  busy: 'the engine or the session is busy',
-  stale_diff: 'the changes differ from the ones that were approved',
-  policy: 'the request is not allowed by the policy',
-  isolation_unavailable: 'a required isolation layer could not be established',
-  internal: 'the engine failed to handle the request',
-  unsupported: 'unsupported method or content type',
-  shutting_down: 'the engine is shutting down',
-};
-
-const STATUS: Record<ErrorCode, number> = {
-  invalid_request: 400,
-  too_large: 413,
-  not_found: 404,
-  busy: 409,
-  stale_diff: 409,
-  policy: 403,
-  isolation_unavailable: 422,
-  internal: 500,
-  unsupported: 405,
-  shutting_down: 503,
-};
-
-/** Maps an engine error code to the gateway's closed set. */
-export function codeFor(engineCode: string): ErrorCode {
-  switch (engineCode) {
-    case 'EINVAL':
-    case 'ENOTDIR':
-      return 'invalid_request';
-    case 'ENOENT':
-    case 'ESRCH':
-      return 'not_found';
-    case 'EBUSY':
-    case 'EEXIST':
-    case 'ECANCELED':
-      return 'busy';
-    case 'E2BIG':
-      return 'too_large';
-    case 'EACCES':
-    case 'EPERM':
-      return 'policy';
-    case 'ESHUTDOWN':
-      return 'shutting_down';
-    default:
-      return 'internal';
-  }
-}
+const SESSION = SESSION_ID;
 
 export interface GatewayOptions {
   readonly socketPath: string;
@@ -514,7 +450,7 @@ export class Gateway {
   }
 }
 
-function parseCommitBody(body: Buffer): Result<z.infer<typeof commitBody>> {
+function parseCommitBody(body: Buffer): Result<z.infer<typeof commitBodySchema>> {
   let raw: unknown;
   try {
     raw = JSON.parse(body.toString('utf8'), (key: string, value: unknown) => {
@@ -526,6 +462,6 @@ function parseCommitBody(body: Buffer): Result<z.infer<typeof commitBody>> {
   } catch {
     return err('EINVAL', 'invalid JSON');
   }
-  const parsed = commitBody.safeParse(raw);
+  const parsed = commitBodySchema.safeParse(raw);
   return parsed.success ? ok(parsed.data) : err('EINVAL', 'invalid commit request');
 }

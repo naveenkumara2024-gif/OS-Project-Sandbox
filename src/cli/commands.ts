@@ -1,6 +1,7 @@
 import { readFileSync, readSync, unlinkSync } from 'node:fs';
 import { errnoNumber } from '../collect/classify.js';
 import { MAX_REQUEST_BYTES, parseRunRequest } from '../gateway/request.js';
+import { serveStdio } from '../gateway/mcp/server.js';
 import { defaultSocketPath, Gateway } from '../gateway/server.js';
 import { errFromException, errnoCode, ok, type Result } from '../util/result.js';
 import {
@@ -250,4 +251,26 @@ export async function serveMode(args: readonly string[]): Promise<number> {
   return 0;
 }
 
-export { stderrLogger };
+/**
+ * `aegis mcp`: the MCP server on stdin and stdout. Nothing else may touch stdout, so diagnostics
+ * go to stderr (the stdio binding allows that) and the engine is built with the stderr logger.
+ */
+export async function mcpMode(args: readonly string[]): Promise<number> {
+  if (args.length !== 0) {
+    process.stderr.write('usage: aegis mcp\n');
+    return EX_USAGE;
+  }
+  const logger = stderrLogger();
+  const opened = openEngine(process.env, logger);
+  if (!opened.ok) {
+    process.stderr.write(
+      `aegis mcp: cannot start: ${opened.kind ?? 'engine'} unavailable (${opened.error.code}); ${opened.error.context}\n`,
+    );
+    return EX_DATAERR;
+  }
+  await reapOrphans();
+  const { engine } = opened.value;
+  engine.start();
+  await serveStdio({ engine, input: process.stdin, output: process.stdout, logger });
+  return 0;
+}
