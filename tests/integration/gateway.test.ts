@@ -222,6 +222,18 @@ describe('gateway socket and directory', () => {
     expect((await call('GET', '/v1/status')).status).toBe(200); // the first one is unharmed
   });
 
+  it('says so when the socket path is too long for a Unix socket', async () => {
+    const helper = helperBuilds()[0];
+    if (helper === undefined) throw new Error('no helper build');
+    engine = makeEngine(helper, parent);
+    const r = await Gateway.start({
+      socketPath: join(root, 'a'.repeat(100), 'gateway.sock'),
+      engine,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe('ENAMETOOLONG');
+  });
+
   it('needs XDG_RUNTIME_DIR and does not fall back to a shared directory', () => {
     expect(defaultSocketPath({}).ok).toBe(false);
     expect(defaultSocketPath({ XDG_RUNTIME_DIR: 'relative' }).ok).toBe(false);

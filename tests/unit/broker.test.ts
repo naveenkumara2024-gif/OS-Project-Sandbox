@@ -278,6 +278,20 @@ describe('Broker limits', () => {
     expect(audit.entries[0]).toMatchObject({ decision: 'allow', reason: 'limit' });
   });
 
+  it('ends a tunnel that lives past its lifetime, even if it is busy', async () => {
+    const sock = await start({ limits: { lifetimeMs: 250 } });
+    const x = await exchange(sock, CONNECT('allowed.test'));
+    const keepBusy = setInterval(() => {
+      x.socket.write('ping');
+    }, 40);
+    await new Promise((r) => setTimeout(r, 500));
+    clearInterval(keepBusy);
+    expect(audit.entries).toHaveLength(1);
+    expect(audit.entries[0]).toMatchObject({ decision: 'allow', reason: 'limit' });
+    expect(audit.entries[0]?.duration_ms).toBeLessThan(450);
+    x.socket.destroy();
+  });
+
   it('ends an idle tunnel', async () => {
     const sock = await start({ limits: { idleMs: 150 } });
     const x = await exchange(sock, CONNECT('allowed.test'));

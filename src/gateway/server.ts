@@ -104,6 +104,14 @@ export class Gateway {
 
   static async start(opts: GatewayOptions): Promise<Result<Gateway>> {
     const limits = { ...DEFAULT_LIMITS, ...opts.limits };
+    // sockaddr_un.sun_path is 108 bytes including the terminator; a longer path would be cut or
+    // refused by the kernel with an error that does not say why.
+    if (Buffer.byteLength(opts.socketPath, 'utf8') >= 108) {
+      return err(
+        'ENAMETOOLONG',
+        'the gateway socket path is longer than a Unix socket allows (107 bytes)',
+      );
+    }
     const dir = ensurePrivateDir(dirname(opts.socketPath));
     if (!dir.ok) return dir;
     // A leftover socket is removed only if nobody is listening on it.
