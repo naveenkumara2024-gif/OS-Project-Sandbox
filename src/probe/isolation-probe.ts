@@ -7,7 +7,7 @@ import {
   realCgroupFs,
   type CgroupFs,
 } from '../launch/cgroup.js';
-import { runCell } from '../launch/run-cell.js';
+import { runCell, type RunCellDeps } from '../launch/run-cell.js';
 import { realPlanEnv } from '../launch/rootfs-plan.js';
 import { parseSelfCgroup } from './procfs.js';
 import type { ReceiptLayers } from './isolation.js';
@@ -30,6 +30,7 @@ export interface IsolationReport {
     readonly cause: string | null;
     readonly level: number | null;
     readonly layers: ReceiptLayers | null;
+    readonly landlock_abi: number | null;
     readonly wall_ms: number | null;
     readonly hint: string | null;
     readonly error: string | null;
@@ -38,6 +39,7 @@ export interface IsolationReport {
 
 export async function collectIsolationReport(
   helperPath: string | null,
+  governance: RunCellDeps['governance'] | null,
   fs: CgroupFs = realCgroupFs(),
 ): Promise<IsolationReport> {
   let text = '';
@@ -78,12 +80,17 @@ export async function collectIsolationReport(
       cause: null,
       level: null,
       layers: null,
+      landlock_abi: null,
       wall_ms: null,
       hint: null,
       error: null,
     };
     if (helperPath === null) {
       return { ...none, error: 'helper not available' };
+    }
+    if (governance === null) {
+      // No ceiling means no run: the self-test is a real run like any other.
+      return { ...none, error: 'policy file unavailable' };
     }
     const req = parseRunRequest(
       JSON.stringify({
@@ -95,7 +102,7 @@ export async function collectIsolationReport(
     if (!req.ok) {
       return { ...none, error: req.error.context };
     }
-    const r = await runCell(req.value, { helperPath, planEnv: realPlanEnv() });
+    const r = await runCell(req.value, { helperPath, planEnv: realPlanEnv(), governance });
     if (!r.ok) {
       return { ...none, error: `${r.error.code}: ${r.error.context}` };
     }
@@ -104,6 +111,7 @@ export async function collectIsolationReport(
       cause: r.value.termination.cause,
       level: r.value.isolation.level,
       layers: r.value.isolation.layers,
+      landlock_abi: r.value.isolation.landlock_abi,
       wall_ms: r.value.usage.wall_ms,
       hint: r.value.hint,
       error: null,

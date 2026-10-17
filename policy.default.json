@@ -1,5 +1,5 @@
 {
-  "_comment": "Human-owned ceiling policy (CLAUDE.md 6.4). Never mounted into a cell. Stage 3 only reads ingest_roots and ingest_excludes; the full ceiling schema (limits, network, require) arrives in Stage 4.",
+  "_comment": "Human-owned ceiling policy (CLAUDE.md 6.4). Never mounted into a cell. A request may ask for less than the ceiling, never more. A file that is unreadable or invalid refuses every run; there is no built-in fallback.",
   "ingest_roots": [],
   "ingest_excludes": [
     ".ssh",
@@ -11,5 +11,18 @@
     "dist",
     "*.key",
     "*.pem"
-  ]
+  ],
+  "ceiling": {
+    "limits": {
+      "wall_ms": 60000,
+      "output_kb": 1024,
+      "memory_mb": 2048,
+      "pids": 512,
+      "cpu_percent": 400,
+      "cpu_ms": 300000,
+      "disk_mb": 256
+    },
+    "network_allow": [],
+    "require_at_least": ["caps_dropped", "no_new_privs", "seccomp"]
+  }
 }

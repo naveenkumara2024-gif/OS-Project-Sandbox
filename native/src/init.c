@@ -1,11 +1,17 @@
 #define _GNU_SOURCE
 #include "init.h"
 
+#include "caps.h"
+#include "landlock.h"
+#include "seccomp.h"
+#include "spec.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/signalfd.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
@@ -19,10 +25,17 @@
  * exec of the helper binary (bound read-only into the cell), so it carries no launch spec and no
  * host paths in memory.
  *
- * Trust: until Stage 4 drops capabilities the payload holds CAP_SYS_PTRACE in this user namespace
- * and can reach descriptor 4 through /proc/1/fd. The records written here are therefore about the
- * payload's own outcome and can be forged by it. Limit causes are read by the host from the
- * cgroup and do not pass through this process.
+ * Trust (Stage 4): this process makes itself non-dumpable, sets no_new_privs and drops every
+ * capability before it forks, so the payload (which inherits that and never gets a capability
+ * back) cannot ptrace init or read the fd, mem and environ files under /proc/1. Descriptor 4 is
+ * close-on-exec before the payload's execve. The records written here therefore cannot be forged
+ * from inside the cell. Limit causes are read by the host from the cgroup and do not pass through
+ * this process.
+ *
+ * Order (prompt section 4.1): dumpable, no_new_privs, capabilities; fork; in the payload child
+ * Landlock, then seccomp last, then execve. no_new_privs comes first because an unprivileged
+ * process may only install a filter or a ruleset once it is set; the filter comes last so nothing
+ * after it needs a denied system call.
  */
 
 enum { FD_STATUS = 4, EXIT_OK = 0, EXIT_NOT_INIT = 64, EXIT_INTERNAL = 70 };
@@ -50,6 +63,94 @@ static void status_fmt(const char *fmt, long v)
     if (n > 0 && (size_t)n < sizeof line) {
         status_line(line);
     }
+}
+
+static void report_layer(const char *layer, int ok_flag, int err_no)
+{
+    char line[96];
+    int n;
+    if (ok_flag) {
+        n = snprintf(line, sizeof line, "layer %s ok\n", layer);
+    } else {
+        n = snprintf(line, sizeof line, "layer %s fail %d\n", layer, err_no);
+    }
+    if (n > 0 && (size_t)n < sizeof line) {
+        status_line(line);
+    }
+}
+
+static int required(const aegis_init_opts_t *o, uint32_t bit)
+{
+    return (o->require_mask & bit) != 0U;
+}
+
+/* Ablation builds only: the layer is reported as unavailable without being tried. */
+static int ablated(const aegis_init_opts_t *o, uint32_t bit)
+{
+    return (o->ablate_mask & bit) != 0U;
+}
+
+/* A layer is only "ok" once it has been read back from the kernel. */
+static int establish_no_new_privs(void)
+{
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) != 0) {
+        return errno;
+    }
+    if (prctl(PR_GET_NO_NEW_PRIVS, 0UL, 0UL, 0UL, 0UL) != 1) {
+        return EPERM;
+    }
+    return 0;
+}
+
+static int establish_caps_dropped(void)
+{
+    if (aegis_caps_drop() != 0 || aegis_caps_verify_dropped() != 0) {
+        return errno != 0 ? errno : EPERM;
+    }
+    return 0;
+}
+
+/* Runs in the payload child, before execve. Returns 0 to go on, or -1 when a required layer could
+ * not be established; the layer's own record has already been written. */
+static int harden_payload(const aegis_init_opts_t *opts)
+{
+    /* Landlock: optional unless the manifest requires it. */
+    int ll_errno = 0;
+    aegis_landlock_info_t info;
+    memset(&info, 0, sizeof info);
+    if (ablated(opts, AEGIS_REQ_LANDLOCK)) {
+        ll_errno = EOPNOTSUPP;
+    } else if (aegis_landlock_apply(&info) != 0) {
+        ll_errno = errno != 0 ? errno : EPERM;
+    }
+    if (ll_errno == 0) {
+        report_layer("landlock", 1, 0);
+        status_fmt("landlock_abi %ld\n", (long)info.abi);
+    } else {
+        report_layer("landlock", 0, ll_errno);
+        if (required(opts, AEGIS_REQ_LANDLOCK)) {
+            return -1;
+        }
+    }
+
+    /* seccomp is last. The status write below stays allowed under the filter. */
+    int sc_errno = 0;
+    if (ablated(opts, AEGIS_REQ_SECCOMP)) {
+        sc_errno = EOPNOTSUPP;
+    } else if (aegis_seccomp_install() != 0) {
+        sc_errno = errno != 0 ? errno : EPERM;
+    } else if (prctl(PR_GET_SECCOMP, 0UL, 0UL, 0UL, 0UL) != 2) {
+        sc_errno = EPERM; /* SECCOMP_MODE_FILTER */
+    }
+    if (sc_errno == 0) {
+        report_layer("seccomp", 1, 0);
+    } else {
+        report_layer("seccomp", 0, sc_errno);
+        if (required(opts, AEGIS_REQ_SECCOMP)) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static int build_mask(sigset_t *m)
@@ -82,18 +183,37 @@ static void report_full_mounts(void)
     }
 }
 
-int aegis_init_run(char *const *payload_argv)
+int aegis_init_run(char *const *payload_argv, const aegis_init_opts_t *opts)
 {
     if (getpid() != 1) {
         return EXIT_NOT_INIT;
     }
-    if (payload_argv == NULL || payload_argv[0] == NULL) {
+    if (payload_argv == NULL || payload_argv[0] == NULL || opts == NULL) {
         return EXIT_INTERNAL;
     }
     /* The status descriptor was inherited without close-on-exec so it could reach this process;
      * the payload must not get it. */
     int fl = fcntl(FD_STATUS, F_GETFD);
     if (fl < 0 || fcntl(FD_STATUS, F_SETFD, fl | FD_CLOEXEC) != 0) {
+        return EXIT_INTERNAL;
+    }
+
+    /* Hardening of init itself. An exec resets the dumpable flag, so this is done here and not in
+     * the boot child. Non-dumpable makes the files under /proc/1 and ptrace need CAP_SYS_PTRACE,
+     * which nothing in the cell has after the drop below. */
+    if (prctl(PR_SET_DUMPABLE, 0UL, 0UL, 0UL, 0UL) != 0 ||
+        prctl(PR_GET_DUMPABLE, 0UL, 0UL, 0UL, 0UL) != 0) {
+        status_fmt("layer init fail %ld\n", errno != 0 ? errno : EPERM);
+        return EXIT_INTERNAL;
+    }
+    int nnp_errno = ablated(opts, AEGIS_REQ_NO_NEW_PRIVS) ? EOPNOTSUPP : establish_no_new_privs();
+    report_layer("no_new_privs", nnp_errno == 0, nnp_errno);
+    if (nnp_errno != 0 && required(opts, AEGIS_REQ_NO_NEW_PRIVS)) {
+        return EXIT_INTERNAL;
+    }
+    int caps_errno = ablated(opts, AEGIS_REQ_CAPS_DROPPED) ? EOPNOTSUPP : establish_caps_dropped();
+    report_layer("caps_dropped", caps_errno == 0, caps_errno);
+    if (caps_errno != 0 && required(opts, AEGIS_REQ_CAPS_DROPPED)) {
         return EXIT_INTERNAL;
     }
 
@@ -122,6 +242,13 @@ int aegis_init_run(char *const *payload_argv)
     if (payload == 0) {
         close(exec_pipe[0]);
         (void)sigprocmask(SIG_UNBLOCK, &mask, NULL);
+        if (harden_payload(opts) != 0) {
+            /* The layer's record is written; the byte tells init the report is already made. */
+            char f = 'F';
+            ssize_t fw = write(exec_pipe[1], &f, 1);
+            (void)fw;
+            _exit(127);
+        }
         execve(payload_argv[0], payload_argv, environ);
         /* Still here: execve failed and descriptor 4 is still open (close-on-exec only fires on
          * success). Say why, then tell init through the pipe that the report is already made. */

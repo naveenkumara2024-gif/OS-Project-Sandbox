@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { helperBuilds, sh } from '../helpers/cell.js';
 
 // Probe 5: connect to 1.1.1.1:443 and to the Windows gateway. Layer expected to stop it: the
-// network namespace (no interface but a down loopback, no route).
+// network namespace (no interface but a down loopback, no route). Since Stage 4 Landlock also
+// refuses TCP connect, so the error may be "Permission denied" before the route lookup happens.
 
 /** The host's default gateway, which under WSL2 NAT is the Windows side. */
 function defaultGateway(): string | null {
@@ -31,7 +32,9 @@ describe.each(helperBuilds())('probe 5: network ($name build)', (helper) => {
     );
     expect(r.termination, JSON.stringify(r)).toEqual({ cause: 'exit' });
     expect(r.stdout).toMatch(/net-rc=[1-9]/);
-    expect(r.stdout).toMatch(/Network is unreachable|Connection refused|No route/);
+    expect(r.stdout).toMatch(
+      /Network is unreachable|Connection refused|No route|Permission denied/,
+    );
     const ifaces = r.stdout.split('IFACES:\n')[1]?.split('ROUTES:')[0]?.trim().split('\n');
     expect(ifaces).toEqual(['lo']);
     expect(r.stdout.split('ROUTES:\n')[1]?.trim()).toBe('0');

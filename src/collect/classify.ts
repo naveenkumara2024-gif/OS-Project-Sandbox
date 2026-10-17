@@ -108,14 +108,17 @@ export function classify(f: Facts): Classified {
         };
       }
     }
-    for (const r of f.records) {
-      if (r.kind === 'layer' && !r.ok) {
-        return {
-          termination: { cause: 'isolation_unavailable', layer: r.layer, errno: r.errno },
-          exitCode: null,
-          limitsHit,
-        };
-      }
+    // The *last* failed layer is the one that stopped the cell: a fatal failure is the final layer
+    // record before the process exits, whereas optional layers (overlay falling back to a copy,
+    // landlock that was not required) report a failure and the cell goes on.
+    const failed = f.records.filter((r) => r.kind === 'layer' && !r.ok);
+    const last = failed[failed.length - 1];
+    if (last !== undefined) {
+      return {
+        termination: { cause: 'isolation_unavailable', layer: last.layer, errno: last.errno },
+        exitCode: null,
+        limitsHit,
+      };
     }
     return { termination: { cause: 'internal_error' }, exitCode: null, limitsHit };
   }
@@ -192,6 +195,9 @@ export function hintFor(t: Termination, l: HintLimits): string | null {
     case 'internal_error':
       return 'the cell ended without a usable report; this is an engine problem, not the command';
     default:
+      if (t.cause === 'signal:SIGSYS') {
+        return 'killed by SIGSYS: the seccomp filter rejected a system call from an unsupported architecture or ABI';
+      }
       return `ended by ${t.cause.slice('signal:'.length)}`;
   }
 }

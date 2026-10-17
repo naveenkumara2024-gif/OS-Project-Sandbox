@@ -39,6 +39,8 @@ const seeds = {
     cgroupFd: true,
     workspace: { lower: '/tmp/aegis-ws/lower', rw: '/tmp/aegis-ws/rw', forceCopy: true },
   },
+  with_require: { ...base, cgroupFd: true, requireMask: 0b00111 },
+  with_all_require_and_ablate: { ...base, requireMask: 0b11111, ablateMask: 0b01101 },
   many_args: {
     ...base,
     argv: ['/bin/sh', ...Array.from({ length: 60 }, (_, i) => `arg${String(i)}`)],

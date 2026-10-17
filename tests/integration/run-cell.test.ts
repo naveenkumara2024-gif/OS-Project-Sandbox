@@ -1,12 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type PlanEnv } from '../../src/launch/rootfs-plan.js';
 import { parseMountInfo } from '../../src/probe/procfs.js';
 import { NON_WORKSPACE_LAYERS } from '../../src/probe/isolation.js';
 import { err, ok } from '../../src/util/result.js';
-import { helperBuilds, request, runIn, sh, withPrivateParent } from '../helpers/cell.js';
+import { helperBuilds, request, runIn, runWith, sh, withPrivateParent } from '../helpers/cell.js';
 
 // needs_userns: these tests create real cells. If the kernel cannot, they fail with the helper's
 // layer and errno in the assertion message; they are never skipped (CLAUDE.md 7).
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe.each(helperBuilds())('cell ($name build)', (helper) => {
   it('runs a command and reports all eleven layers as established', async () => {
@@ -47,18 +51,42 @@ describe.each(helperBuilds())('cell ($name build)', (helper) => {
     expect(r.exit_code).toBeNull();
   });
 
-  it('keeps init alive against signals from inside the cell and forwards the catchable ones', async () => {
-    // pid_namespaces(7): signals from inside the namespace to its init are dropped unless init
-    // handles them. SIGKILL is dropped; SIGTERM is read by init and forwarded to the payload.
+  it('refuses signals from the payload to init (Landlock signal scope) and init stays alive', async () => {
+    // Before Stage 4 these were dropped by the pid namespace; now the kernel refuses them with
+    // EPERM because init is outside the payload's Landlock domain.
     const r = await sh(
       helper,
-      "trap 'echo got-term' TERM; kill -KILL 1; echo kill-rc=$?; kill -TERM 1; sleep 0.3; ls /proc/1 >/dev/null 2>&1 && echo init-alive",
+      'kill -KILL 1; echo kill-rc=$?; kill -TERM 1; echo term-rc=$?; sleep 0.2; ls /proc/1 >/dev/null 2>&1 && echo init-alive',
     );
     expect(r.termination).toEqual({ cause: 'exit' });
-    expect(r.stdout).toContain('kill-rc=0');
-    expect(r.stdout).toContain('got-term');
+    expect(r.stdout).toContain('kill-rc=1');
+    expect(r.stdout).toContain('term-rc=1');
     expect(r.stdout).toContain('init-alive');
+    expect(r.isolation.layers.landlock).toBe(true);
   });
+
+  it.runIf(helper.name === 'debug-asan')(
+    'still forwards a catchable signal to the payload when Landlock is unavailable',
+    async () => {
+      // The forwarding path exists for kernels without Landlock; the ablation build can make
+      // Landlock unavailable on demand (the release build rejects that spec key).
+      vi.stubEnv('AEGIS_TEST_UNSAFE', '1');
+      const r = await runWith(
+        helper,
+        request([
+          '/usr/bin/sh',
+          '-c',
+          "trap 'echo got-term' TERM; kill -KILL 1; echo kill-rc=$?; kill -TERM 1; sleep 0.3; ls /proc/1 >/dev/null 2>&1 && echo init-alive",
+        ]),
+        { ablate: ['landlock'] },
+      );
+      expect(r.termination).toEqual({ cause: 'exit' });
+      expect(r.isolation.layers.landlock).toBe(false);
+      expect(r.stdout).toContain('kill-rc=0');
+      expect(r.stdout).toContain('got-term');
+      expect(r.stdout).toContain('init-alive');
+    },
+  );
 
   it('kills the whole cell on wall-clock timeout and removes the cell directory', async () => {
     await withPrivateParent(async (parent, leftover) => {

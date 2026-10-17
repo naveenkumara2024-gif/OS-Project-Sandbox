@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classify, errnoName, signalName } from '../../src/collect/classify.js';
+import { classify, errnoName, hintFor, signalName } from '../../src/collect/classify.js';
 import type { StatusRecord } from '../../src/sys/status.js';
 
 const started: StatusRecord = { kind: 'started', pid: 10 };
@@ -174,5 +174,42 @@ describe('classify', () => {
     // Aliases resolve to the familiar name, not to whichever the table lists last.
     expect(signalName(6)).toBe('SIGABRT');
     expect(signalName(17)).toBe('SIGCHLD');
+  });
+
+  it('names the layer that stopped the cell, not an optional one that failed earlier', () => {
+    // overlay fell back to a copy (non-fatal), then a required layer failed (fatal, and last).
+    const c = classify({
+      records: [
+        { kind: 'layer', layer: 'overlay', ok: false, errno: 38 },
+        { kind: 'layer', layer: 'landlock', ok: false, errno: 95 },
+      ],
+      supervisorKill: null,
+      oomKills: 0,
+      pidsMaxHits: 0,
+    });
+    expect(c.termination).toEqual({
+      cause: 'isolation_unavailable',
+      layer: 'landlock',
+      errno: 95,
+    });
+  });
+
+  it('explains a SIGSYS death as the seccomp filter', () => {
+    const c = classify({
+      records: [started, { kind: 'signaled', signal: 31 }],
+      supervisorKill: null,
+      oomKills: 0,
+      pidsMaxHits: 0,
+    });
+    expect(c.termination).toEqual({ cause: 'signal:SIGSYS' });
+    const hint = hintFor(c.termination, {
+      wallMs: 1,
+      cpuMs: 1,
+      memoryMb: 1,
+      pids: 1,
+      outputKb: 1,
+      diskMb: 1,
+    });
+    expect(hint).toMatch(/seccomp/);
   });
 });

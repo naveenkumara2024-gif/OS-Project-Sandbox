@@ -20,6 +20,7 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectProbe, realProbeEnv } from './probe/probe.js';
 import { checkExecutable, locateHelper, moduleDir } from './sys/helper.js';
+import { errnoNumber } from './collect/classify.js';
 import { errFromException, errnoCode, ok, type Result } from './util/result.js';
 
 // sysexits.h values, spelled out so each exit status is documented where it is used.
@@ -33,9 +34,9 @@ function repoPolicyPath(): string {
   return join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'policy.default.json');
 }
 
-function loadPolicyOrDefault(): Policy {
-  const r = loadPolicy(process.env['AEGIS_POLICY_FILE'] ?? repoPolicyPath());
-  return r.ok ? r.value : { ingestRoots: [], ingestExcludes: [], commitRoots: [] };
+/** An unreadable or invalid policy is an error: there is no built-in fallback (CLAUDE.md 6.4). */
+function loadActivePolicy(): Result<Policy> {
+  return loadPolicy(process.env['AEGIS_POLICY_FILE'] ?? repoPolicyPath());
 }
 
 function logFatal(event: string, reason: unknown): void {
@@ -141,11 +142,28 @@ async function runMode(args: readonly string[]): Promise<number> {
     return EX_SOFTWARE;
   }
 
+  const policy = loadActivePolicy();
+  if (!policy.ok) {
+    // Still a receipt-shaped refusal naming the layer, so a harness handles it like any other.
+    printJson({
+      id: req.value.id,
+      termination: {
+        cause: 'isolation_unavailable',
+        layer: 'policy',
+        errno: errnoNumber('EINVAL'),
+      },
+      error: { code: 'isolation_unavailable', layer: 'policy', errno: policy.error.code },
+      hint: 'the ceiling policy file could not be read or is invalid; the command was not run',
+    });
+    return EX_DATAERR;
+  }
+
   await reapOrphans();
   const result = await runCell(req.value, {
     helperPath: helper.value.path,
     planEnv: realPlanEnv(),
-    ingestPolicy: loadPolicyOrDefault(),
+    ingestPolicy: policy.value,
+    governance: { ceiling: policy.value.ceiling, ceilingSha256: policy.value.ceilingSha256 },
   });
   if (!result.ok) {
     printJson({
@@ -210,8 +228,12 @@ async function commitMode(args: readonly string[]): Promise<number> {
     printJson({ id, error: { code: 'no_such_run', detail: persisted.error.context } });
     return EX_DATAERR;
   }
-  const policy = loadPolicyOrDefault();
-  const root = await resolveCommitRoot(dest, policy);
+  const policy = loadActivePolicy();
+  if (!policy.ok) {
+    printJson({ id, error: { code: 'policy_invalid', detail: policy.error.code } });
+    return EX_DATAERR;
+  }
+  const root = await resolveCommitRoot(dest, policy.value);
   if (!root.ok) {
     printJson({ id, error: { code: 'commit_root_refused', detail: root.error.code } });
     return EX_DATAERR;
@@ -256,7 +278,13 @@ async function main(argv: readonly string[]): Promise<number> {
     const helperPath =
       helper.ok && checkExecutable(helper.value.path).ok ? helper.value.path : null;
     await reapOrphans();
-    const isolation = await collectIsolationReport(helperPath);
+    const policy = loadActivePolicy();
+    const isolation = await collectIsolationReport(
+      helperPath,
+      policy.ok
+        ? { ceiling: policy.value.ceiling, ceilingSha256: policy.value.ceilingSha256 }
+        : null,
+    );
     process.stdout.write(`${JSON.stringify({ ...report, isolation }, null, 2)}\n`);
     return 0;
   }

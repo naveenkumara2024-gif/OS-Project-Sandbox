@@ -58,5 +58,10 @@ long aegis_sys_pivot_root(const char *new_root, const char *put_old);
 long aegis_sys_openat2(int dirfd, const char *path, const struct aegis_open_how *how, size_t size);
 long aegis_sys_pidfd_open(int pid, unsigned int flags);
 long aegis_sys_landlock_create_ruleset(const void *attr, size_t size, uint32_t flags);
+long aegis_sys_landlock_add_rule(int ruleset_fd, int rule_type, const void *attr, uint32_t flags);
+long aegis_sys_landlock_restrict_self(int ruleset_fd, uint32_t flags);
+/* capset(2) has no glibc wrapper without libcap. `header` and `data` are the kernel's
+ * struct __user_cap_header_struct and an array of two struct __user_cap_data_struct (version 3). */
+long aegis_sys_capset(void *header, const void *data);
 
 #endif

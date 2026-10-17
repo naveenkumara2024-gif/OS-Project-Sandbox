@@ -40,9 +40,16 @@ The blueprint also reports an "isolation level" (its example shows 4) without de
    | 3 | overlay workspace | 3 |
    | 4 | capability drop, `no_new_privs`, seccomp | 4 |
 
-   `cgroup_cpu` and `cgroup_kill` are reported but belong to no tier (CPU delegation is optional on
-   other machines; the kill has a per-pid fallback). A later stage adds its layers to the next
-   tier; it never renumbers an existing one.
+   `cgroup_cpu`, `cgroup_kill` and (Stage 4) `landlock` are reported but belong to no tier (CPU
+   delegation is optional on other machines; the kill has a per-pid fallback; a kernel without
+   Landlock must still be able to reach level 4, and a manifest that wants it can `require` it). A
+   later stage adds its layers to the next tier; it never renumbers an existing one.
+
+   Tier 4 was filled in by Stage 4 (`caps_dropped`, `no_new_privs`, `seccomp`). Because the tiers
+   are consecutive, a run reaches level 4 only if tier 3 (`overlay`) is also satisfied, so a run
+   without a workspace reports level 2 even though its payload is fully hardened. The receipt's
+   `layers` object always shows the individual layers; the open question of whether the level
+   should count only the tiers a run attempted is recorded in the Stage 4 report.
 
 ## Consequences
 

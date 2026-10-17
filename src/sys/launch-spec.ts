@@ -34,7 +34,20 @@ const KEY = {
   workspaceLower: 11,
   workspaceRw: 12,
   workspaceForceCopy: 13,
+  requireMask: 14,
+  ablateMask: 15,
 } as const;
+
+/** Bits of REQUIRE_MASK: the layers the helper itself refuses to start without (native/src/spec.h,
+ * enum aegis_require_bit). Every other required layer is checked from the receipt in TypeScript. */
+export const REQUIRE_BITS = {
+  caps_dropped: 1 << 0,
+  no_new_privs: 1 << 1,
+  seccomp: 1 << 2,
+  landlock: 1 << 3,
+  overlay: 1 << 4,
+} as const;
+export const REQUIRE_MASK_ALL = 0x1f;
 
 /** The descriptor number the helper expects the cgroup directory on (native/src/spec.h). */
 export const CGROUP_FD = 6;
@@ -70,6 +83,13 @@ export interface LaunchSpec {
   readonly maskDirs: readonly string[];
   /** True when the control plane passes a cgroup directory on descriptor 6 (CLONE_INTO_CGROUP). */
   readonly cgroupFd: boolean;
+  /** Layers the helper must establish before the payload runs (REQUIRE_BITS). Left out, the helper
+   * assumes caps_dropped, no_new_privs and seccomp; it never assumes "nothing". */
+  readonly requireMask?: number;
+  /** Test only: hardening layers (REQUIRE_BITS, never overlay) the helper must treat as
+   * unavailable without trying them. Only builds compiled with AEGIS_ENABLE_ABLATION accept it;
+   * `release` rejects the spec. */
+  readonly ablateMask?: number;
   /** Host paths for the workspace binds (Stage 3); all three present together, or omitted. */
   readonly workspace?: {
     readonly lower: string;
@@ -238,6 +258,31 @@ export function encodeLaunchSpec(spec: LaunchSpec): Result<Uint8Array> {
     b.writeUInt32LE(CGROUP_FD, 0);
     w.record(KEY.cgroupFd, b);
   }
+  if (spec.requireMask !== undefined) {
+    if (
+      !Number.isInteger(spec.requireMask) ||
+      spec.requireMask < 0 ||
+      spec.requireMask > REQUIRE_MASK_ALL
+    ) {
+      return badSpec('require mask out of range');
+    }
+    const b = Buffer.alloc(4);
+    b.writeUInt32LE(spec.requireMask, 0);
+    w.record(KEY.requireMask, b);
+  }
+  if (spec.ablateMask !== undefined) {
+    if (
+      !Number.isInteger(spec.ablateMask) ||
+      spec.ablateMask < 1 ||
+      spec.ablateMask > REQUIRE_MASK_ALL ||
+      (spec.ablateMask & REQUIRE_BITS.overlay) !== 0
+    ) {
+      return badSpec('ablate mask out of range');
+    }
+    const b = Buffer.alloc(4);
+    b.writeUInt32LE(spec.ablateMask, 0);
+    w.record(KEY.ablateMask, b);
+  }
   if (spec.workspace !== undefined) {
     const ws = spec.workspace;
     for (const [key, value] of [
@@ -298,6 +343,8 @@ export function decodeLaunchSpec(bytes: Uint8Array): Result<LaunchSpec> {
   let wLower: string | null = null;
   let wRw: string | null = null;
   let wForceCopy = false;
+  let requireMask: number | null = null;
+  let ablateMask: number | null = null;
 
   const text = (b: Buffer): string | null => {
     if (b.length < 1 || b[b.length - 1] !== 0 || b.subarray(0, b.length - 1).includes(0)) {
@@ -383,6 +430,15 @@ export function decodeLaunchSpec(bytes: Uint8Array): Result<LaunchSpec> {
         if (body.length !== 0 || wForceCopy) return badSpec('bad workspace force-copy record');
         wForceCopy = true;
         break;
+      case KEY.requireMask:
+        if (body.length !== 4 || requireMask !== null) return badSpec('bad require-mask record');
+        requireMask = body.readUInt32LE(0);
+        if (requireMask > REQUIRE_MASK_ALL) return badSpec('require mask out of range');
+        break;
+      case KEY.ablateMask:
+        if (body.length !== 4 || ablateMask !== null) return badSpec('bad ablate-mask record');
+        ablateMask = body.readUInt32LE(0);
+        break;
       default:
         return badSpec('unknown key');
     }
@@ -407,6 +463,8 @@ export function decodeLaunchSpec(bytes: Uint8Array): Result<LaunchSpec> {
     maskFiles,
     maskDirs,
     cgroupFd,
+    ...(requireMask !== null ? { requireMask } : {}),
+    ...(ablateMask !== null ? { ablateMask } : {}),
     ...(wLower !== null && wRw !== null
       ? { workspace: { lower: wLower, rw: wRw, forceCopy: wForceCopy } }
       : {}),

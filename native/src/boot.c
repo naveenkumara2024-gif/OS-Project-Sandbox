@@ -610,6 +610,12 @@ static void child_main(int sync_fd)
         if (chdir("/workspace") != 0) {
             child_fail("workspace", errno);
         }
+        /* A manifest that requires the overlay does not get the copy fallback. */
+        if (!used_overlay && (s->require_mask & AEGIS_REQ_OVERLAY) != 0U) {
+            child_fail("overlay", overlay_errno != 0 ? overlay_errno : ENOTSUP);
+        }
+    } else if ((s->require_mask & AEGIS_REQ_OVERLAY) != 0U) {
+        child_fail("overlay", ENOENT); /* required, but the run has no workspace at all */
     }
 
     for (size_t i = 0; i < NS_COUNT; i++) {
@@ -622,10 +628,26 @@ static void child_main(int sync_fd)
     /* Replace this process with init, which starts the payload. The environment is the spec's
      * explicit one and init passes it on unchanged. Descriptor 4 (status) must survive this exec
      * so init can report; 3, 5 and 6 stay close-on-exec and are closed by it. */
-    static char *init_argv[AEGIS_SPEC_MAX_ARGV + 4U];
+    static char *init_argv[AEGIS_SPEC_MAX_ARGV + 8U];
+    static char require_text[16];
+    if (snprintf(require_text, sizeof require_text, "%u", (unsigned)s->require_mask) < 0) {
+        child_fail("exec", EINVAL);
+    }
     size_t ia = 0;
     init_argv[ia++] = (char *)(uintptr_t)INIT_PATH_IN_ROOT;
     init_argv[ia++] = (char *)(uintptr_t)"init";
+    init_argv[ia++] = (char *)(uintptr_t)"--require";
+    init_argv[ia++] = require_text;
+#ifdef AEGIS_ENABLE_ABLATION
+    static char ablate_text[16];
+    if (s->ablate_mask != 0U) {
+        if (snprintf(ablate_text, sizeof ablate_text, "%u", (unsigned)s->ablate_mask) < 0) {
+            child_fail("exec", EINVAL);
+        }
+        init_argv[ia++] = (char *)(uintptr_t)"--ablate";
+        init_argv[ia++] = ablate_text;
+    }
+#endif
     init_argv[ia++] = (char *)(uintptr_t)"--";
     for (size_t i = 0; i < s->argc; i++) {
         init_argv[ia++] = (char *)(uintptr_t)s->argv[i];
