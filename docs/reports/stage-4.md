@@ -218,3 +218,32 @@ Stated, not hidden (this repeats the prompt's 4.9 with the measured additions):
 All work is on `stage/4-hardening` (implementation `61922bb`, then this report). Back out with
 `git revert` or by deleting the branch. No cgroup configuration, system file or package was
 touched; cell directories and cgroups follow the Stage 2 and 3 cleanup rules (checked: none left).
+
+## Fixes after done
+
+### CI: the native build failed on the GitHub runner (2026-10-18)
+
+- **Issue.** Every GitHub Actions job that builds the helper (`typescript`, `native (gcc)`,
+  `native (clang)`) failed within about 10 seconds with `LANDLOCK_ACCESS_FS_IOCTL_DEV undeclared`,
+  `struct landlock_ruleset_attr has no member named scoped`, and `LANDLOCK_SCOPE_*` undeclared
+  (run 39135276550, from `gh run view --log-failed`).
+- **Cause.** `landlock.c` required the build machine's `linux/landlock.h` to know ABI 6, a choice
+  recorded in this report and in `docs/SETUP-WSL2.md` ("fails the build rather than dropping a
+  right"). It held on the owner's Linux 6.18 headers; `ubuntu-latest` ships 6.8 headers (ABI 4).
+  The stricter build never protected anything: use of each right was already gated at run time on
+  the kernel's reported ABI.
+- **Change.** New `native/src/landlock_abi.h` with `#ifndef`-guarded definitions of the three
+  missing constants and an owned `struct aegis_landlock_ruleset_attr` (ABI 6 layout, size asserted
+  to 24 bytes); `landlock.c` includes it and uses that struct. No behaviour change on a kernel that
+  supports the ABI. `docs/SETUP-WSL2.md` corrected.
+- **Commands run and results (local, WSL2).** `landlock.c` compiled with `-std=c11 -Wall -Wextra
+  -Wpedantic -Wconversion -Wshadow -Werror -fsyntax-only` with gcc and clang, against the system
+  headers and against a copy of `linux/landlock.h` with the ABI 5 and 6 definitions stripped (all
+  four compile; the previous source fails the stripped-header case with 5 errors).
+  `node scripts/build-native.mjs all` with `--cc=gcc` and `--cc=clang` built; `node
+  scripts/check-native.mjs` clean (clang-format, clang-tidy, filter table test); `npm run check`:
+  47 files, 451 passed, 11 skipped by design.
+- **Not verified.** The GitHub run itself: nothing was pushed. Whether the `typescript` job's
+  `npm run check` passes on the runner (it needs `systemd-run --user`, user namespaces and a
+  delegated cgroup) is unknown until CI runs; earlier runs of that job also failed.
+
