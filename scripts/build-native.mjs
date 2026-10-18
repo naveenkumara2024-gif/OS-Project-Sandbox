@@ -2,8 +2,8 @@
 // Builds the native helper `aegis-cell` by invoking the C compiler with an argument vector (no
 // shell). Usage: node scripts/build-native.mjs [release|debug-asan|fuzz|all] [--cc=gcc|clang]
 //
-// Output: native/build/<mode>/aegis-cell (fuzz: native/build/fuzz/fuzz-spec, clang only, never part
-// of `all`). The release build is attempted as static-pie, then as
+// Output: native/build/<mode>/aegis-cell (fuzz: native/build/fuzz/fuzz-spec and fuzz-filter:
+// native/build/fuzz-filter/fuzz-filter, clang only, never part of `all`). The release build is attempted as static-pie, then as
 // plain static; if both fail it falls back to a dynamic build and says so loudly, because the
 // in-cell helper must not depend on host shared libraries (CLAUDE.md 2.1).
 import { spawnSync } from 'node:child_process';
@@ -22,6 +22,10 @@ const helperSources = src([
   'init.c',
   'fsop.c',
   'overlay.c',
+  'caps.c',
+  'seccomp.c',
+  'landlock.c',
+  'fwd.c',
 ]);
 
 // -U before -D: some distributions predefine _FORTIFY_SOURCE, and -Werror would reject the clash.
@@ -57,6 +61,24 @@ const modes = {
     sources: src(['spec.c', 'fuzz_spec.c']),
     outName: 'fuzz-spec',
     clangOnly: true,
+    // AEGIS_ENABLE_ABLATION: test-only layer switches exist in this build and in debug-asan, and
+    // are compiled out of release (CLAUDE.md 6.5).
+    compile: [
+      '-O1',
+      '-g',
+      '-fno-omit-frame-pointer',
+      '-DAEGIS_ENABLE_ABLATION=1',
+      '-fsanitize=fuzzer,address,undefined',
+    ],
+    links: [
+      { label: 'libFuzzer (asan+ubsan)', flags: ['-pie', '-fsanitize=fuzzer,address,undefined'] },
+    ],
+  },
+  'fuzz-filter': {
+    // libFuzzer target for the seccomp filter assembler and its reference evaluator.
+    sources: src(['seccomp.c', 'fuzz_filter.c']),
+    outName: 'fuzz-filter',
+    clangOnly: true,
     compile: ['-O1', '-g', '-fno-omit-frame-pointer', '-fsanitize=fuzzer,address,undefined'],
     links: [
       { label: 'libFuzzer (asan+ubsan)', flags: ['-pie', '-fsanitize=fuzzer,address,undefined'] },
@@ -66,7 +88,13 @@ const modes = {
     sources: helperSources,
     outName: 'aegis-cell',
     // ASan does not support static glibc, so this build is dynamic by design.
-    compile: ['-O1', '-g', '-fno-omit-frame-pointer', '-fsanitize=address,undefined'],
+    compile: [
+      '-O1',
+      '-g',
+      '-fno-omit-frame-pointer',
+      '-DAEGIS_ENABLE_ABLATION=1',
+      '-fsanitize=address,undefined',
+    ],
     links: [{ label: 'dynamic-pie (asan)', flags: ['-pie', '-fsanitize=address,undefined'] }],
   },
 };

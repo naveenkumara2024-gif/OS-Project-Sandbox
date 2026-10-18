@@ -18,6 +18,19 @@ describe('parseStatus', () => {
     ]);
   });
 
+  it('parses the Stage 4 layers and the Landlock ABI record', () => {
+    const r = parseStatus(
+      'layer no_new_privs ok\nlayer caps_dropped ok\nlayer landlock ok\nlandlock_abi 7\nlayer seccomp fail 22\n',
+    );
+    expect(r.ok && r.value).toEqual([
+      { kind: 'layer', layer: 'no_new_privs', ok: true },
+      { kind: 'layer', layer: 'caps_dropped', ok: true },
+      { kind: 'layer', layer: 'landlock', ok: true },
+      { kind: 'landlock_abi', abi: 7 },
+      { kind: 'layer', layer: 'seccomp', ok: false, errno: 22 },
+    ]);
+  });
+
   it('accepts an empty stream', () => {
     const r = parseStatus('');
     expect(r.ok && r.value).toEqual([]);
@@ -36,6 +49,9 @@ describe('parseStatus', () => {
     'weird 1\n',
     'layer userns ok\n\n',
     'exited 99999999999\n',
+    'landlock_abi\n',
+    'landlock_abi seven\n',
+    'landlock_abi 7 8\n',
   ])('rejects %j', (text) => {
     expect(parseStatus(text).ok).toBe(false);
   });

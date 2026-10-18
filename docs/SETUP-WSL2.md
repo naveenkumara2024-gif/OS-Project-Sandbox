@@ -24,7 +24,7 @@ The second command installs the Clang sanitizer runtime that matches your Clang 
 `libclang-rt-21-dev`). Without it the Clang `debug-asan` build fails to link with
 `cannot find libclang_rt.asan.a`; the GCC `debug-asan` build is unaffected.
 
-No `libseccomp-dev`, `rsync` or fuzzing runtime is needed yet; later stages list theirs.
+No `libseccomp-dev` is needed: Stage 4 assembles its seccomp filter itself (ADR 0005). Stage 4 does need kernel headers new enough for Landlock ABI 6 (`linux/landlock.h` must define `LANDLOCK_SCOPE_SIGNAL`; the kernel headers on the owner's machine, Linux 6.18, do); the build fails loudly if they do not. Landlock itself is optional at run time (a run reports whether it was applied).
 
 ## 3. Node.js
 
@@ -144,10 +144,23 @@ hand: `ls /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/ae
 No new system packages, no `sudo`: `rsync` and `wslpath` are already present, and unprivileged
 overlayfs works inside a cell on this kernel (the Stage 3 report records the measurement).
 
-Host directories are only ever ingested from roots you list in `policy.default.json`
-(`ingest_roots`), which the engine reads and never writes; `commit_roots` (defaults to
-`ingest_roots`) lists where `aegis commit` may write. Both start empty, so nothing is allowed until
-you add a path. Set `AEGIS_POLICY_FILE` to use another file (for tests).
+Host directories are only ever ingested from roots you list in your policy file (`ingest_roots`),
+which the engine reads and never writes; `commit_roots` (defaults to `ingest_roots`) lists where a
+commit may write. Both start empty, so nothing is allowed until you add a path.
+
+**Where the policy file is (changed in Stage 5).** The engine reads `AEGIS_POLICY_FILE`, else
+`$XDG_CONFIG_HOME/aegis/policy.json`, else `~/.config/aegis/policy.json`, and **refuses to run if
+there is none or it is invalid**. It no longer falls back to `policy.default.json` in the
+repository, because the repository is normally the workspace an agent can write to, and the
+ceiling must live outside every workspace. Treat `policy.default.json` as a template:
+
+```bash
+mkdir -p ~/.config/aegis && cp policy.default.json ~/.config/aegis/policy.json
+```
+
+The file is parsed strictly (unknown keys are rejected) and must contain the whole `ceiling`,
+including the Stage 5 keys `network_ports`, `max_cells`, `memory_budget_mb`, `max_sessions` and
+`session_idle_s`. A policy file written for Stage 4 is therefore refused until those are added.
 
 ```bash
 # run with a workspace (host directory) and inline files; the response carries `changes`
@@ -158,9 +171,13 @@ node dist/main.js commit <run-id> --dest <allowed root> [--paths a.txt,sub/b.txt
 node dist/main.js discard <run-id>
 ```
 
-A run's workspace lives in `$TMPDIR/aegis-workspace-<run-id>` until `commit`/`discard` (Stage 5
-adds sessions and idle expiry). A deletion in the change list is reported by `commit`, never
-applied automatically.
+A run's workspace is a **session** (Stage 5). It lives in `$TMPDIR/aegis-workspace-<id>` until
+`commit`/`discard`, or until it has been idle longer than `session_idle_s` in the policy (default
+30 minutes); expired and orphaned sessions are removed by the next engine that starts. A deletion in
+the change list is reported by `commit`, never applied automatically. `aegis diff <id>` shows the
+change list and its `changes_sha256`; `aegis commit <id> --expect <sha256>` applies only if the
+changes are still the ones you looked at. `aegis serve` and `aegis mcp` are described in
+`docs/INTEGRATION.md`.
 
 ## Environment variables
 
@@ -168,5 +185,8 @@ applied automatically.
 | --- | --- |
 | `AEGIS_CELL_BIN` | Absolute path of the helper, overriding `native/build/release/aegis-cell`. The chosen path and its source appear in the probe output. |
 | `AEGIS_CC` | Compiler used by `scripts/build-native.mjs` (default `cc`; `--cc=` wins). |
-| `AEGIS_POLICY_FILE` | Absolute path of the policy file, overriding `policy.default.json` at the repository root. |
+| `AEGIS_POLICY_FILE` | Absolute path of the policy file. Without it the engine reads `~/.config/aegis/policy.json` (see section 10); there is no fallback to the repository's copy. |
+| `XDG_RUNTIME_DIR` | Needed by `aegis serve`: the gateway socket is `$XDG_RUNTIME_DIR/aegis/gateway.sock`. There is no fallback to a shared directory. |
+| `XDG_STATE_HOME` | Where `engine.log` and `audit.jsonl` go (default `~/.local/state/aegis`, mode 0700). |
+| `AEGIS_TEST_UNSAFE` | `1` allows the test-only layer ablation used by the escape probes (debug builds only). Never set it outside tests. |
 | `AEGIS_NO_SCOPE` | `1` makes `scripts/run-in-scope.mjs` run its command directly instead of through `systemd-run --user --scope`. |

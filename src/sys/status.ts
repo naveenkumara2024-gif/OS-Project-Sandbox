@@ -15,6 +15,12 @@ export const HELPER_LAYERS = [
   'dev',
   'init',
   'overlay',
+  'caps_dropped',
+  'no_new_privs',
+  'seccomp',
+  'landlock',
+  'loopback',
+  'broker',
 ] as const;
 
 export type HelperLayer = (typeof HELPER_LAYERS)[number];
@@ -27,6 +33,7 @@ const FAILURE_ONLY = [
   'exec',
   'cgroup_placement',
   'workspace',
+  'policy',
 ] as const;
 const KNOWN_LAYERS = new Set<string>([...HELPER_LAYERS, ...FAILURE_ONLY]);
 
@@ -39,6 +46,8 @@ export type StatusRecord =
   /** PID 1's own wait status as seen from outside the cell (not forgeable by the payload). */
   | { readonly kind: 'cellexit'; readonly code: number }
   | { readonly kind: 'cellsig'; readonly signal: number }
+  /** The Landlock ABI version the payload's ruleset was built for (reported with `landlock ok`). */
+  | { readonly kind: 'landlock_abi'; readonly abi: number }
   /** A capped tmpfs that was full when the payload ended. */
   | { readonly kind: 'full'; readonly path: string }
   | { readonly kind: 'workspace'; readonly mode: 'overlay' | 'copy' };
@@ -101,6 +110,10 @@ export function parseStatus(text: string): Result<StatusRecord[]> {
       }
       if (n !== null && head === 'cellexit') {
         out.push({ kind: 'cellexit', code: n });
+        continue;
+      }
+      if (n !== null && head === 'landlock_abi') {
+        out.push({ kind: 'landlock_abi', abi: n });
         continue;
       }
       if (n !== null && head === 'cellsig') {

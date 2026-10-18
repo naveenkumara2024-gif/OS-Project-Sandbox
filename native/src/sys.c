@@ -16,6 +16,8 @@
 #define AEGIS_NR_PIDFD_SEND_SIGNAL 424
 #define AEGIS_NR_OPENAT2 437
 #define AEGIS_NR_LANDLOCK_CREATE_RULESET 444
+#define AEGIS_NR_LANDLOCK_ADD_RULE 445
+#define AEGIS_NR_LANDLOCK_RESTRICT_SELF 446
 #else
 #error "unsupported architecture: add the syscall numbers for it in native/src/sys.c"
 #endif
@@ -50,4 +52,20 @@ long aegis_sys_pidfd_open(int pid, unsigned int flags)
 long aegis_sys_landlock_create_ruleset(const void *attr, size_t size, uint32_t flags)
 {
     return syscall(AEGIS_NR_LANDLOCK_CREATE_RULESET, attr, size, flags);
+}
+
+long aegis_sys_landlock_add_rule(int ruleset_fd, int rule_type, const void *attr, uint32_t flags)
+{
+    return syscall(AEGIS_NR_LANDLOCK_ADD_RULE, ruleset_fd, rule_type, attr, flags);
+}
+
+long aegis_sys_landlock_restrict_self(int ruleset_fd, uint32_t flags)
+{
+    return syscall(AEGIS_NR_LANDLOCK_RESTRICT_SELF, ruleset_fd, flags);
+}
+
+/* The capset number differs between architectures, so the system header is used for it. */
+long aegis_sys_capset(void *header, const void *data)
+{
+    return syscall(SYS_capset, header, data);
 }

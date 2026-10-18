@@ -53,10 +53,12 @@ describe.each(helperBuilds())('probe 17: disk fill ($name build)', (helper) => {
         {},
       ),
     );
-    // /usr is writable only because the plan created that directory on the cell's tmpfs root;
-    // /home does not exist. Either way nothing reaches the host.
-    expect(r.stdout).toMatch(/rc=[01]/);
-    // A failed redirection is reported on the shell's own stderr, not on the command's.
-    expect(r.stdout + r.stderr).toMatch(/Directory nonexistent|No such file or directory/);
+    // /usr was writable before Stage 4 only because the plan made that directory on the cell's
+    // tmpfs root; Landlock now refuses it, and /home does not exist. Either way nothing reaches
+    // the host. A failed redirection is reported on the shell's own stderr, not on the command's.
+    expect(r.stdout).toMatch(/rc=[0-9]/);
+    expect(r.stdout + r.stderr).toMatch(
+      /Permission denied|Directory nonexistent|No such file or directory/,
+    );
   });
 });

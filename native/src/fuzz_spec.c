@@ -61,6 +61,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     must(spec.nmask_files <= AEGIS_SPEC_MAX_MASKS && spec.nmask_dirs <= AEGIS_SPEC_MAX_MASKS);
     must(spec.argv[0][0] == '/');
     must(spec.has_cgroup_fd == 0 || spec.has_cgroup_fd == 1);
+    must((spec.require_mask & ~(uint32_t)AEGIS_REQ_ALL) == 0U);
+    must((spec.ablate_mask & ~((uint32_t)AEGIS_REQ_ALL & ~(uint32_t)AEGIS_REQ_OVERLAY)) == 0U);
     must(spec.has_workspace == 0 || spec.has_workspace == 1);
     if (spec.has_workspace) {
         check_str(data, size, spec.workspace_lower);
@@ -70,6 +72,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
              !has_dotdot_component(spec.workspace_rw));
     } else {
         must(spec.workspace_lower == NULL && spec.workspace_rw == NULL);
+    }
+    if (spec.broker_socket != NULL) {
+        check_str(data, size, spec.broker_socket);
+        must(spec.broker_socket[0] == '/' && !has_dotdot_component(spec.broker_socket));
     }
     must(spec.argv[spec.argc] == NULL && spec.envp[spec.envc] == NULL);
     for (size_t i = 0; i < spec.argc; i++) {

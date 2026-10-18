@@ -33,7 +33,17 @@ describe('isolationLevel', () => {
     const l = all(true);
     l.cgroup_cpu = false;
     l.cgroup_kill = false;
+    l.landlock = false;
     expect(isolationLevel(l)).toBe(TIERS.length);
+  });
+
+  it('reaches level 4 only with the capability drop, no_new_privs and seccomp (tier 4)', () => {
+    expect(TIERS.length).toBe(4);
+    for (const missing of ['caps_dropped', 'no_new_privs', 'seccomp'] as const) {
+      const l = all(true);
+      l[missing] = false;
+      expect(isolationLevel(l), missing).toBe(3);
+    }
   });
 
   it('is monotone: turning a layer off never raises the level', () => {

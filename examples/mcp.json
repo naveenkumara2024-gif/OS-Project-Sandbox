@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "aegis": {
+      "command": "systemd-run",
+      "args": [
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--same-dir",
+        "--",
+        "node",
+        "/ABSOLUTE/PATH/TO/aegis-engine/dist/main.js",
+        "mcp"
+      ]
+    }
+  }
+}

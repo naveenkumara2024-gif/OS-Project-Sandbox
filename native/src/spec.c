@@ -152,6 +152,8 @@ int aegis_spec_parse(const uint8_t *buf, size_t len, aegis_spec_t *out)
     int have_cgfd = 0;
     int have_wlower = 0;
     int have_wrw = 0;
+    int have_require = 0;
+    out->require_mask = AEGIS_REQ_DEFAULT;
     size_t off = AEGIS_SPEC_HEADER_BYTES;
     while (off < len) {
         if (len - off < 8U) {
@@ -306,6 +308,45 @@ int aegis_spec_parse(const uint8_t *buf, size_t len, aegis_spec_t *out)
                 return AEGIS_SPEC_E_LIMIT;
             }
             out->workspace_force_copy = 1;
+            break;
+        case AEGIS_KEY_REQUIRE_MASK:
+            if (have_require) {
+                return AEGIS_SPEC_E_DUPLICATE;
+            }
+            if (rlen != 4U) {
+                return AEGIS_SPEC_E_LIMIT;
+            }
+            if ((rd32(body) & ~AEGIS_REQ_ALL) != 0U) {
+                return AEGIS_SPEC_E_LIMIT; /* a layer this helper does not know */
+            }
+            out->require_mask = rd32(body);
+            have_require = 1;
+            break;
+#ifdef AEGIS_ENABLE_ABLATION
+        case AEGIS_KEY_ABLATE_MASK:
+            if (out->ablate_mask != 0U || rlen != 4U) {
+                return AEGIS_SPEC_E_LIMIT;
+            }
+            if ((rd32(body) & ~(AEGIS_REQ_ALL & ~(uint32_t)AEGIS_REQ_OVERLAY)) != 0U ||
+                rd32(body) == 0U) {
+                return AEGIS_SPEC_E_LIMIT;
+            }
+            out->ablate_mask = rd32(body);
+            break;
+#endif
+        case AEGIS_KEY_BROKER_SOCKET:
+            if (out->broker_socket != NULL) {
+                return AEGIS_SPEC_E_DUPLICATE;
+            }
+            rc = take_string(body, rlen, &s);
+            if (rc != 0) {
+                return rc;
+            }
+            rc = check_abs_path(s);
+            if (rc != 0) {
+                return rc;
+            }
+            out->broker_socket = s;
             break;
         case AEGIS_KEY_CGROUP_FD:
             if (have_cgfd) {

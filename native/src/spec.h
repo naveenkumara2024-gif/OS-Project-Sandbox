@@ -50,8 +50,31 @@ enum aegis_spec_key {
     /* host path: read-write bind. Must already contain "upper" and "work" subdirectories, both
      * reachable without crossing a mount boundary, which overlayfs requires of upperdir/workdir. */
     AEGIS_KEY_WORKSPACE_RW = 12,
-    AEGIS_KEY_WORKSPACE_FORCE_COPY = 13 /* flag (empty body): skip the overlay attempt (tests) */
+    AEGIS_KEY_WORKSPACE_FORCE_COPY = 13, /* flag (empty body): skip the overlay attempt (tests) */
+    /* u32 bitmask of enum aegis_require_bit: layers the run must not start without. Absent means
+     * AEGIS_REQ_DEFAULT, never "nothing required". */
+    AEGIS_KEY_REQUIRE_MASK = 14,
+    /* u32 bitmask of enum aegis_require_bit (never OVERLAY): hardening layers to treat as
+     * unavailable without trying them. Accepted only by builds compiled with AEGIS_ENABLE_ABLATION
+     * (never `release`, CLAUDE.md 6.5); any other build rejects the key. */
+    AEGIS_KEY_ABLATE_MASK = 15,
+    /* host path of the broker's Unix socket. Its presence means a brokered cell: the socket is
+     * bound into the cell at /.aegis-broker.sock, loopback is brought up, and init starts the
+     * forwarder. */
+    AEGIS_KEY_BROKER_SOCKET = 16
 };
+
+/* Layers the helper itself can refuse to run without (the bits of REQUIRE_MASK). The control plane
+ * checks every other layer in the receipt. */
+enum aegis_require_bit {
+    AEGIS_REQ_CAPS_DROPPED = 1U << 0,
+    AEGIS_REQ_NO_NEW_PRIVS = 1U << 1,
+    AEGIS_REQ_SECCOMP = 1U << 2,
+    AEGIS_REQ_LANDLOCK = 1U << 3,
+    AEGIS_REQ_OVERLAY = 1U << 4
+};
+#define AEGIS_REQ_ALL 0x1fU
+#define AEGIS_REQ_DEFAULT 0x07U /* caps_dropped, no_new_privs, seccomp */
 
 enum aegis_root_kind {
     AEGIS_ENTRY_BIND_DIR = 1,
@@ -101,6 +124,9 @@ typedef struct {
     const char *workspace_rw;
     int has_workspace; /* both of the above were present */
     int workspace_force_copy;
+    uint32_t require_mask; /* enum aegis_require_bit; AEGIS_REQ_DEFAULT when the key is absent */
+    uint32_t ablate_mask;  /* ablation builds only */
+    const char *broker_socket; /* NULL unless the cell is brokered */
 } aegis_spec_t;
 
 /* Returns 0 on success or a negative enum aegis_spec_error value. */

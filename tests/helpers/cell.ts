@@ -6,6 +6,9 @@ import type { CellResult } from '../../src/launch/run-cell.js';
 import { runCell, type RunCellDeps } from '../../src/launch/run-cell.js';
 import { realPlanEnv, type PlanEnv } from '../../src/launch/rootfs-plan.js';
 import { parseRunRequest, type RunRequest } from '../../src/gateway/request.js';
+import { loadPolicy } from '../../src/policy/policy.js';
+import type { Limits } from '../../src/policy/limits.js';
+import type { ReceiptLayer } from '../../src/probe/isolation.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -32,6 +35,31 @@ export function helperBuilds(): HelperBuild[] {
   return all;
 }
 
+/** The repository's policy.default.json, loaded the way the CLI loads it (never a built-in). */
+export function testGovernance(
+  override: {
+    readonly requireAtLeast?: readonly ReceiptLayer[];
+    readonly limits?: Partial<Limits>;
+    readonly networkAllow?: readonly string[];
+    readonly networkPorts?: readonly number[];
+  } = {},
+): RunCellDeps['governance'] {
+  const p = loadPolicy(join(root, 'policy.default.json'));
+  if (!p.ok) {
+    throw new Error(`policy.default.json is invalid: ${p.error.context}`);
+  }
+  return {
+    ceiling: {
+      ...p.value.ceiling,
+      limits: { ...p.value.ceiling.limits, ...override.limits },
+      ...(override.networkAllow === undefined ? {} : { networkAllow: override.networkAllow }),
+      ...(override.networkPorts === undefined ? {} : { networkPorts: override.networkPorts }),
+      ...(override.requireAtLeast === undefined ? {} : { requireAtLeast: override.requireAtLeast }),
+    },
+    ceilingSha256: p.value.ceilingSha256,
+  };
+}
+
 export function request(command: string[], extra: Record<string, unknown> = {}): RunRequest {
   const r = parseRunRequest(JSON.stringify({ id: 'test', command, ...extra }));
   if (!r.ok) {
@@ -49,6 +77,7 @@ export async function runIn(
   const r = await runCell(req, {
     helperPath: helper.path,
     planEnv,
+    governance: testGovernance(),
     ...(tmpParent === undefined ? {} : { tmpParent }),
   });
   if (!r.ok) {
@@ -73,7 +102,12 @@ export async function runWith(
   req: RunRequest,
   extra: Partial<RunCellDeps>,
 ): Promise<CellResult> {
-  const r = await runCell(req, { helperPath: helper.path, planEnv: realPlanEnv(), ...extra });
+  const r = await runCell(req, {
+    helperPath: helper.path,
+    planEnv: realPlanEnv(),
+    governance: testGovernance(),
+    ...extra,
+  });
   if (!r.ok) {
     throw new Error(`runCell failed: ${r.error.code}: ${r.error.context}`);
   }

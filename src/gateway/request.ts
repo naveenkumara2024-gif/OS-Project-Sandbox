@@ -1,25 +1,19 @@
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
+import { SERVER_ID } from '../engine/session.js';
+import {
+  manifestRequestSchema,
+  requestedLimitsSchema,
+  toManifestRequest,
+  type ManifestRequest,
+} from '../policy/manifest.js';
 import { err, ok, type Result } from '../util/result.js';
 
 // The request is untrusted data (CLAUDE.md 6.4): byte cap before parsing, strict schema, unknown
-// fields rejected, dangerous keys rejected, bounds enforced. The model may ask for less, never more.
+// fields rejected, dangerous keys rejected. The model may ask for less, never more: values are
+// bounded here only for sanity and then clamped to the ceiling policy (src/policy/manifest.ts).
 
 export const MAX_REQUEST_BYTES = 256 * 1024;
-export const DEFAULT_WALL_MS = 10_000;
-export const MAX_WALL_MS = 60_000;
-export const DEFAULT_OUTPUT_KB = 256;
-export const MAX_OUTPUT_KB = 1024;
-// Resource limits (Stage 2). These bounds are constants until the Stage 4 ceiling policy exists.
-export const DEFAULT_MEMORY_MB = 512;
-export const MAX_MEMORY_MB = 2048;
-export const DEFAULT_PIDS = 128;
-export const MAX_PIDS = 512;
-export const DEFAULT_CPU_PERCENT = 100;
-export const MAX_CPU_PERCENT = 400;
-export const DEFAULT_CPU_MS = 10_000;
-export const MAX_CPU_MS = 300_000;
-export const DEFAULT_DISK_MB = 16;
-export const MAX_DISK_MB = 256;
 const MAX_ENV_ENTRIES = 32;
 const MAX_ENV_BYTES = 8 * 1024;
 const MAX_ARG_BYTES = 4095; // the launch spec stores a NUL after each string within 4096 bytes
@@ -29,6 +23,16 @@ const MAX_FILES = 256;
 const MAX_FILE_BYTES = 1024 * 1024;
 const noNulPath = (s: string): boolean => !s.includes('\0') && !s.startsWith('/') && s !== '';
 const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/;
+// Names the engine sets itself (PATH, and the proxy variables of a brokered cell); a request
+// cannot override them.
+const RESERVED_ENV = new Set([
+  'PATH',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'FTP_PROXY',
+]);
 
 const noNul = (s: string): boolean => !s.includes('\0');
 const withinBytes = (s: string): boolean => Buffer.byteLength(s, 'utf8') <= MAX_ARG_BYTES;
@@ -43,8 +47,15 @@ const workspaceSchema = z.strictObject({
   mode: z.enum(['overlay']).optional(),
 });
 
-const requestSchema = z.strictObject({
-  id: z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/),
+export const requestSchema = z.strictObject({
+  // A label for the caller's own bookkeeping. Optional: the engine's own run and session ids are
+  // the authoritative ones.
+  id: z
+    .string()
+    .regex(/^[A-Za-z0-9_.-]{1,64}$/)
+    .optional(),
+  // Continue this session (Stage 5). Only ids the engine generated are accepted.
+  session: z.string().regex(SERVER_ID).optional(),
   files: z.array(fileSchema).max(MAX_FILES).default([]),
   workspace: workspaceSchema.optional(),
   command: z
@@ -53,41 +64,23 @@ const requestSchema = z.strictObject({
     .max(64)
     .refine((c) => (c[0] ?? '').startsWith('/'), 'command[0] must be an absolute path'),
   env: z.record(z.string(), z.string().refine(noNul).refine(withinBytes)).default({}),
-  limits: z
-    .strictObject({
-      wall_ms: z.number().int().min(1).max(MAX_WALL_MS).default(DEFAULT_WALL_MS),
-      output_kb: z.number().int().min(1).max(MAX_OUTPUT_KB).default(DEFAULT_OUTPUT_KB),
-      memory_mb: z.number().int().min(1).max(MAX_MEMORY_MB).default(DEFAULT_MEMORY_MB),
-      pids: z.number().int().min(1).max(MAX_PIDS).default(DEFAULT_PIDS),
-      cpu_percent: z.number().int().min(1).max(MAX_CPU_PERCENT).default(DEFAULT_CPU_PERCENT),
-      cpu_ms: z.number().int().min(1).max(MAX_CPU_MS).default(DEFAULT_CPU_MS),
-      disk_mb: z.number().int().min(1).max(MAX_DISK_MB).default(DEFAULT_DISK_MB),
-    })
-    .default({
-      wall_ms: DEFAULT_WALL_MS,
-      output_kb: DEFAULT_OUTPUT_KB,
-      memory_mb: DEFAULT_MEMORY_MB,
-      pids: DEFAULT_PIDS,
-      cpu_percent: DEFAULT_CPU_PERCENT,
-      cpu_ms: DEFAULT_CPU_MS,
-      disk_mb: DEFAULT_DISK_MB,
-    }),
+  // Legacy spelling of manifest.limits, kept so existing callers work. Giving both is an error.
+  limits: requestedLimitsSchema.optional(),
+  manifest: manifestRequestSchema.optional(),
 });
 
 export interface RunRequest {
+  /** The caller's label, or one generated here. */
   readonly id: string;
+  /** The session to continue, or null to start a new one (when there are files or a source). */
+  readonly session: string | null;
   readonly files: readonly { readonly path: string; readonly content: string }[];
   readonly workspaceSource: string | null;
   readonly command: readonly string[];
   /** A Map, never a plain object: caller-supplied keys must not touch prototypes (CLAUDE.md 6.4). */
   readonly env: ReadonlyMap<string, string>;
-  readonly wallMs: number;
-  readonly outputBytes: number;
-  readonly memoryMb: number;
-  readonly pids: number;
-  readonly cpuPercent: number;
-  readonly cpuMs: number;
-  readonly diskMb: number;
+  /** What the request asked for. Not yet clamped: resolveManifest applies the ceiling. */
+  readonly manifest: ManifestRequest;
 }
 
 function invalid(context: string): Result<never> {
@@ -130,7 +123,7 @@ export function parseRunRequest(input: Buffer | string): Result<RunRequest> {
   const env = new Map<string, string>();
   let envBytes = 0;
   for (const [name, value] of Object.entries(data.env)) {
-    if (!ENV_NAME.test(name) || name === 'PATH' || name.startsWith('LD_')) {
+    if (!ENV_NAME.test(name) || RESERVED_ENV.has(name) || name.startsWith('LD_')) {
       return invalid('env contains a name that is not allowed');
     }
     envBytes += Buffer.byteLength(name, 'utf8') + Buffer.byteLength(value, 'utf8') + 2;
@@ -140,18 +133,20 @@ export function parseRunRequest(input: Buffer | string): Result<RunRequest> {
     return invalid('env exceeds its size limits');
   }
 
+  if (data.limits !== undefined && data.manifest !== undefined) {
+    return invalid('request has both limits and manifest; use only manifest');
+  }
+  const manifest = toManifestRequest(
+    data.manifest ?? (data.limits !== undefined ? { limits: data.limits } : {}),
+  );
+
   return ok({
-    id: data.id,
+    id: data.id ?? `q-${randomBytes(8).toString('hex')}`,
+    session: data.session ?? null,
     files: data.files,
     workspaceSource: data.workspace?.source ?? null,
     command: data.command,
     env,
-    wallMs: data.limits.wall_ms,
-    outputBytes: data.limits.output_kb * 1024,
-    memoryMb: data.limits.memory_mb,
-    pids: data.limits.pids,
-    cpuPercent: data.limits.cpu_percent,
-    cpuMs: data.limits.cpu_ms,
-    diskMb: data.limits.disk_mb,
+    manifest,
   });
 }

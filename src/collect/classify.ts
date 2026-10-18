@@ -8,11 +8,14 @@ export type SupervisorKill =
   | { readonly kind: 'timeout'; readonly clock: 'wall' | 'cpu' }
   | { readonly kind: 'output_limit'; readonly stream: 'stdout' | 'stderr' }
   | { readonly kind: 'pids_limit' }
-  | { readonly kind: 'disk_limit'; readonly path: string };
+  | { readonly kind: 'disk_limit'; readonly path: string }
+  /** The caller asked for the run to stop (gateway cancel, MCP cancellation). */
+  | { readonly kind: 'cancelled' };
 
 export type Termination =
   | { readonly cause: 'exit' }
   | { readonly cause: 'timeout'; readonly clock: 'wall' | 'cpu' }
+  | { readonly cause: 'cancelled' }
   | { readonly cause: 'oom' }
   | { readonly cause: 'pids_limit' }
   | { readonly cause: 'output_limit'; readonly stream: 'stdout' | 'stderr' }
@@ -91,6 +94,9 @@ export function classify(f: Facts): Classified {
     k?.kind === 'output_limit' ||
     k?.kind === 'pids_limit' ||
     k?.kind === 'disk_limit';
+  if (!started && k?.kind === 'cancelled') {
+    return { termination: { cause: 'cancelled' }, exitCode: null, limitsHit };
+  }
   if (!started && k?.kind === 'timeout') {
     // The supervisor ended the cell before the payload got going (a very short limit, a loaded
     // machine). Any layer failure records are then consequences of that kill, not causes.
@@ -108,14 +114,17 @@ export function classify(f: Facts): Classified {
         };
       }
     }
-    for (const r of f.records) {
-      if (r.kind === 'layer' && !r.ok) {
-        return {
-          termination: { cause: 'isolation_unavailable', layer: r.layer, errno: r.errno },
-          exitCode: null,
-          limitsHit,
-        };
-      }
+    // The *last* failed layer is the one that stopped the cell: a fatal failure is the final layer
+    // record before the process exits, whereas optional layers (overlay falling back to a copy,
+    // landlock that was not required) report a failure and the cell goes on.
+    const failed = f.records.filter((r) => r.kind === 'layer' && !r.ok);
+    const last = failed[failed.length - 1];
+    if (last !== undefined) {
+      return {
+        termination: { cause: 'isolation_unavailable', layer: last.layer, errno: last.errno },
+        exitCode: null,
+        limitsHit,
+      };
     }
     return { termination: { cause: 'internal_error' }, exitCode: null, limitsHit };
   }
@@ -128,6 +137,7 @@ export function classify(f: Facts): Classified {
   if (full?.kind === 'full') limitsHit.push('disk');
 
   if (k !== null) {
+    if (k.kind === 'cancelled') return { termination: { cause: 'cancelled' }, exitCode, limitsHit };
     if (k.kind === 'timeout')
       return { termination: { cause: 'timeout', clock: k.clock }, exitCode, limitsHit };
     if (k.kind === 'output_limit') {
@@ -175,6 +185,8 @@ export function hintFor(t: Termination, l: HintLimits): string | null {
       return t.clock === 'cpu'
         ? `used more than the ${String(l.cpuMs)} ms CPU budget; the program was spinning or the work is too large`
         : `ran past the ${String(l.wallMs)} ms wall-clock limit; it may be waiting or doing too much`;
+    case 'cancelled':
+      return 'the run was cancelled by the caller';
     case 'oom':
       return `killed at the ${String(l.memoryMb)} MB memory limit; reduce the working set or ask for a higher limit`;
     case 'pids_limit':
@@ -192,6 +204,9 @@ export function hintFor(t: Termination, l: HintLimits): string | null {
     case 'internal_error':
       return 'the cell ended without a usable report; this is an engine problem, not the command';
     default:
+      if (t.cause === 'signal:SIGSYS') {
+        return 'killed by SIGSYS: the seccomp filter rejected a system call from an unsupported architecture or ABI';
+      }
       return `ended by ${t.cause.slice('signal:'.length)}`;
   }
 }

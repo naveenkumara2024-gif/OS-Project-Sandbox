@@ -4,6 +4,8 @@ import {
   decodeLaunchSpec,
   encodeLaunchSpec,
   isCleanAbsolutePath,
+  REQUIRE_BITS,
+  REQUIRE_MASK_ALL,
   SPEC_MAX_BYTES,
   SPEC_MAX_ENTRIES,
   type LaunchSpec,
@@ -154,5 +156,48 @@ describe('launch spec encoder', () => {
       ),
       { numRuns: 300 },
     );
+  });
+});
+
+describe('launch spec require mask (Stage 4)', () => {
+  it('round-trips the mask and the test-only flag', () => {
+    const mask = REQUIRE_BITS.caps_dropped | REQUIRE_BITS.seccomp | REQUIRE_BITS.landlock;
+    const d = decodeLaunchSpec(
+      encode({ ...base, requireMask: mask, ablateMask: REQUIRE_BITS.landlock }),
+    );
+    expect(d.ok && d.value.requireMask).toBe(mask);
+    expect(d.ok && d.value.ablateMask).toBe(REQUIRE_BITS.landlock);
+  });
+
+  it('leaves the mask out when none is given, so the helper assumes the default, not nothing', () => {
+    const d = decodeLaunchSpec(encode(base));
+    expect(d.ok && d.value.requireMask).toBeUndefined();
+  });
+
+  it('allows an explicit empty mask', () => {
+    const d = decodeLaunchSpec(encode({ ...base, requireMask: 0 }));
+    expect(d.ok && d.value.requireMask).toBe(0);
+  });
+
+  it.each([-1, 1.5, REQUIRE_MASK_ALL + 1, 2 ** 32])('refuses the mask %s', (m) => {
+    expect(encodeLaunchSpec({ ...base, requireMask: m }).ok).toBe(false);
+  });
+
+  it.each([0, -1, 1.5, REQUIRE_BITS.overlay, REQUIRE_MASK_ALL + 1])(
+    'refuses the ablate mask %s',
+    (m) => {
+      expect(encodeLaunchSpec({ ...base, ablateMask: m }).ok).toBe(false);
+    },
+  );
+
+  it('uses bits that match native/src/spec.h', () => {
+    expect(REQUIRE_BITS).toEqual({
+      caps_dropped: 1,
+      no_new_privs: 2,
+      seccomp: 4,
+      landlock: 8,
+      overlay: 16,
+    });
+    expect(REQUIRE_MASK_ALL).toBe(31);
   });
 });

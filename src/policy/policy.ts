@@ -1,36 +1,39 @@
-import { readFileSync } from 'node:fs';
-import { errFromException, ok, type Result } from '../util/result.js';
+import { createHash } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
+import { err, errFromException, ok, type Result } from '../util/result.js';
 import type { IngestPolicy } from '../stage/ingest.js';
 import type { CommitPolicy } from '../collect/commit.js';
+import { MAX_POLICY_BYTES, parsePolicyFile, type Ceiling } from './ceiling.js';
 
-// The ceiling policy file (CLAUDE.md 6.4): human-owned, read-only to the engine, never mounted
-// into a cell. Stage 3 reads only the ingest/commit roots; the full schema (limits, network,
-// require) is Stage 4.
+// The human-owned policy file (CLAUDE.md 6.4): ingest and commit roots (Stage 3) and the ceiling
+// (Stage 4). It is read once per command, hashed as read, and never mounted into a cell.
 
-export interface Policy extends IngestPolicy, CommitPolicy {}
-
-const DEFAULT_POLICY: Policy = { ingestRoots: [], ingestExcludes: [], commitRoots: [] };
-
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every((x) => typeof x === 'string');
+export interface Policy extends IngestPolicy, CommitPolicy {
+  readonly ceiling: Ceiling;
+  /** SHA-256 of the file bytes exactly as read; echoed in every receipt. */
+  readonly ceilingSha256: string;
 }
 
+/** A policy that cannot be read or does not validate is an error, never a default. */
 export function loadPolicy(path: string): Result<Policy> {
-  let raw: unknown;
+  let bytes: Buffer;
   try {
-    raw = JSON.parse(readFileSync(path, 'utf8'));
+    if (statSync(path).size > MAX_POLICY_BYTES) {
+      return err('E2BIG', 'policy file exceeds the byte limit');
+    }
+    bytes = readFileSync(path);
   } catch (e) {
     return errFromException(e, `read policy ${path}`);
   }
-  if (typeof raw !== 'object' || raw === null) {
-    return ok(DEFAULT_POLICY);
+  const parsed = parsePolicyFile(bytes);
+  if (!parsed.ok) {
+    return parsed;
   }
-  const obj = raw as Record<string, unknown>;
-  const ingestRoots = isStringArray(obj.ingest_roots) ? obj.ingest_roots : [];
-  const ingestExcludes = isStringArray(obj.ingest_excludes) ? obj.ingest_excludes : [];
-  // commit_roots is not in the default policy file yet; the owner adds it when ready (prompt
-  // section 11 item 3). Falling back to ingest_roots keeps a disposable test fixture usable for
-  // both without asking the owner to duplicate the entry.
-  const commitRoots = isStringArray(obj.commit_roots) ? obj.commit_roots : ingestRoots;
-  return ok({ ingestRoots, ingestExcludes, commitRoots });
+  return ok({
+    ingestRoots: parsed.value.ingestRoots,
+    ingestExcludes: parsed.value.ingestExcludes,
+    commitRoots: parsed.value.commitRoots,
+    ceiling: parsed.value.ceiling,
+    ceilingSha256: createHash('sha256').update(bytes).digest('hex'),
+  });
 }

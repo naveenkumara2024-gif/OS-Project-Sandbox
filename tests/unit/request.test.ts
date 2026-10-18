@@ -5,14 +5,18 @@ import { MAX_REQUEST_BYTES, parseRunRequest } from '../../src/gateway/request.js
 const ok = { id: 'r1', command: ['/usr/bin/echo', 'hi'] };
 
 describe('parseRunRequest', () => {
-  it('accepts a minimal request and applies the default limits', () => {
+  it('accepts a minimal request and asks for nothing (defaults apply at resolution)', () => {
     const r = parseRunRequest(JSON.stringify(ok));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.id).toBe('r1');
     expect(r.value.command).toEqual(['/usr/bin/echo', 'hi']);
-    expect(r.value.wallMs).toBe(10_000);
-    expect(r.value.outputBytes).toBe(256 * 1024);
+    expect(r.value.manifest).toEqual({
+      limits: {},
+      networkMode: 'none',
+      networkAllow: [],
+      require: null,
+    });
     expect(r.value.env.size).toBe(0);
   });
 
@@ -24,8 +28,42 @@ describe('parseRunRequest', () => {
     if (!r.ok) return;
     expect(r.value.env).toBeInstanceOf(Map);
     expect(r.value.env.get('FOO')).toBe('bar');
-    expect(r.value.wallMs).toBe(500);
-    expect(r.value.outputBytes).toBe(4096);
+    expect(r.value.manifest.limits).toEqual({ wall_ms: 500, output_kb: 4 });
+  });
+
+  it('treats a top-level limits object as manifest.limits', () => {
+    const legacy = parseRunRequest(JSON.stringify({ ...ok, limits: { wall_ms: 500 } }));
+    const modern = parseRunRequest(
+      JSON.stringify({ ...ok, manifest: { limits: { wall_ms: 500 } } }),
+    );
+    expect(legacy.ok && modern.ok).toBe(true);
+    if (legacy.ok && modern.ok) expect(legacy.value.manifest).toEqual(modern.value.manifest);
+  });
+
+  it('refuses an ambiguous request that has both limits and manifest', () => {
+    const r = parseRunRequest(
+      JSON.stringify({ ...ok, limits: { wall_ms: 5 }, manifest: { limits: { wall_ms: 5 } } }),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe('EINVAL');
+  });
+
+  it('keeps the manifest request, lower-casing and listing domains', () => {
+    const r = parseRunRequest(
+      JSON.stringify({
+        ...ok,
+        manifest: {
+          network: { mode: 'none', allow: ['Example.COM'] },
+          workspace: { mode: 'overlay' },
+          require: ['landlock'],
+        },
+      }),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.manifest.networkAllow).toEqual(['example.com']);
+      expect(r.value.manifest.require).toEqual(['landlock']);
+    }
   });
 
   it.each([
@@ -35,9 +73,19 @@ describe('parseRunRequest', () => {
     ['empty command', { ...ok, command: [] }],
     ['NUL in an argument', { ...ok, command: ['/usr/bin/echo', 'a\u0000b'] }],
     ['bad id', { ...ok, id: '../x' }],
-    ['wall_ms over the maximum', { ...ok, limits: { wall_ms: 60_001 } }],
     ['wall_ms zero', { ...ok, limits: { wall_ms: 0 } }],
-    ['output_kb over the maximum', { ...ok, limits: { output_kb: 1025 } }],
+    ['wall_ms beyond any sane value', { ...ok, limits: { wall_ms: 1e13 } }],
+    ['fractional limit', { ...ok, limits: { wall_ms: 1.5 } }],
+    ['unknown manifest key', { ...ok, manifest: { extra: 1 } }],
+    ['unknown manifest limit', { ...ok, manifest: { limits: { cores: 4 } } }],
+    [
+      'network mode other than none or brokered',
+      { ...ok, manifest: { network: { mode: 'allowlist' } } },
+    ],
+    ['bad domain', { ...ok, manifest: { network: { allow: ['not a host'] } } }],
+    ['domain with a path', { ...ok, manifest: { network: { allow: ['a.example/x'] } } }],
+    ['unknown layer in require', { ...ok, manifest: { require: ['telepathy'] } }],
+    ['workspace mode other than overlay', { ...ok, manifest: { workspace: { mode: 'rw' } } }],
     ['env PATH', { ...ok, env: { PATH: '/x' } }],
     ['env LD_PRELOAD', { ...ok, env: { LD_PRELOAD: '/x' } }],
     ['lower-case env name', { ...ok, env: { foo: 'x' } }],
@@ -90,27 +138,24 @@ describe('parseRunRequest', () => {
     );
   });
 
-  it('never throws on arbitrary JSON values and never exceeds the bounds when it accepts', () => {
+  it('never throws on arbitrary JSON values', () => {
     fc.assert(
       fc.property(fc.json(), (j) => {
-        const r = parseRunRequest(j);
-        if (r.ok) {
-          expect(r.value.wallMs).toBeLessThanOrEqual(60_000);
-          expect(r.value.outputBytes).toBeLessThanOrEqual(1024 * 1024);
-        }
+        expect(typeof parseRunRequest(j).ok).toBe('boolean');
       }),
       { numRuns: 300 },
     );
   });
 
-  it('keeps accepted values within bounds for arbitrary numeric limits', () => {
+  it('keeps accepted limits positive and below the sanity bound (the ceiling clamps the rest)', () => {
     fc.assert(
       fc.property(fc.integer(), fc.integer(), (w, o) => {
         const r = parseRunRequest(JSON.stringify({ ...ok, limits: { wall_ms: w, output_kb: o } }));
         if (r.ok) {
-          expect(r.value.wallMs).toBeGreaterThanOrEqual(1);
-          expect(r.value.wallMs).toBeLessThanOrEqual(60_000);
-          expect(r.value.outputBytes).toBeLessThanOrEqual(1024 * 1024);
+          for (const v of Object.values(r.value.manifest.limits)) {
+            expect(v).toBeGreaterThanOrEqual(1);
+            expect(v).toBeLessThanOrEqual(1_000_000_000_000);
+          }
         }
       }),
       { numRuns: 300 },

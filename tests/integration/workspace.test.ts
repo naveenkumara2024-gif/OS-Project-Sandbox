@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCell } from '../../src/launch/run-cell.js';
 import { realPlanEnv } from '../../src/launch/rootfs-plan.js';
-import { helperBuilds, request, runWith } from '../helpers/cell.js';
+import { helperBuilds, request, runWith, testGovernance } from '../helpers/cell.js';
 
 // needs_userns / needs_overlay: these create real cells with a real workspace. A missing feature
 // fails loudly; it is never silently skipped (CLAUDE.md 7).
@@ -145,13 +145,14 @@ describe.each(helperBuilds())('workspace ($name build)', (helper) => {
     }
   });
 
-  it('level reaches 3 only when overlay (not copy) actually mounted', async () => {
+  it('tier 3 and 4 are reached only when overlay (not copy) actually mounted', async () => {
     const overlay = await runWith(
       helper,
       uniqueRequest(['/usr/bin/true'], { files: [{ path: 'a.txt', content: 'x' }] }),
       { workspaceParent: wsParent, forceCopyWorkspace: false },
     );
-    expect(overlay.isolation.level).toBe(3);
+    // overlay is tier 3 and the hardening layers (Stage 4) are tier 4.
+    expect(overlay.isolation.level).toBe(4);
     const copy = await runWith(
       helper,
       uniqueRequest(['/usr/bin/true'], { files: [{ path: 'a.txt', content: 'x' }] }),
@@ -171,6 +172,7 @@ describe('workspace control-plane behaviour (no cell needed)', () => {
     const r = await runCell(request(['/usr/bin/true'], { files: [{ path: 'a', content: 'x' }] }), {
       helperPath: helper.path,
       planEnv: realPlanEnv(),
+      governance: testGovernance(),
       workspaceParent: notADirectory,
     });
     expect(r.ok).toBe(false);

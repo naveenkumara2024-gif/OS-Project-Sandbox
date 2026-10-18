@@ -13,9 +13,12 @@ export type ReceiptLayer = (typeof RECEIPT_LAYERS)[number];
 
 export type ReceiptLayers = Readonly<Record<ReceiptLayer, boolean>>;
 
-/** Every layer a run can establish without asking for a workspace (everything but `overlay`). */
+/**
+ * Every layer a plain run (no workspace, no network) establishes: everything but `overlay`, and
+ * `loopback` and `broker`, which only a brokered cell has.
+ */
 export const NON_WORKSPACE_LAYERS: readonly ReceiptLayer[] = RECEIPT_LAYERS.filter(
-  (l) => l !== 'overlay',
+  (l) => l !== 'overlay' && l !== 'loopback' && l !== 'broker',
 );
 
 /**
@@ -23,14 +26,16 @@ export const NON_WORKSPACE_LAYERS: readonly ReceiptLayer[] = RECEIPT_LAYERS.filt
  * Tier 3 (`overlay`, Stage 3) is only satisfied by a run that actually mounted an overlay
  * workspace; a run with no workspace request, or one that fell back to a plain copy, simply caps
  * at level 2 rather than claiming a tier it never attempted (CLAUDE.md 1.2 item 2). Tier 4
- * (capability drop, no_new_privs, seccomp) is appended by Stage 4.
- * `cgroup_cpu` and `cgroup_kill` are reported but belong to no tier: CPU delegation is optional
- * and there is a per-pid fallback for the kill.
+ * (capability drop, no_new_privs, seccomp) is Stage 4.
+ * `cgroup_cpu`, `cgroup_kill` and `landlock` are reported but belong to no tier: CPU delegation is
+ * optional, there is a per-pid fallback for the kill, and a kernel without Landlock must still be
+ * able to reach level 4 (a manifest may require `landlock` explicitly).
  */
 export const TIERS: readonly (readonly ReceiptLayer[])[] = [
   ['userns', 'pidns', 'mountns', 'netns', 'root', 'proc', 'dev'],
   ['ipcns', 'utsns', 'cgroupns', 'timens', 'init', 'cgroup_memory', 'cgroup_pids'],
   ['overlay'],
+  ['caps_dropped', 'no_new_privs', 'seccomp'],
 ];
 
 export function emptyReceiptLayers(): Record<ReceiptLayer, boolean> {
