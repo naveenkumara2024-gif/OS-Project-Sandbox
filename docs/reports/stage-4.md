@@ -218,3 +218,52 @@ Stated, not hidden (this repeats the prompt's 4.9 with the measured additions):
 All work is on `stage/4-hardening` (implementation `61922bb`, then this report). Back out with
 `git revert` or by deleting the branch. No cgroup configuration, system file or package was
 touched; cell directories and cgroups follow the Stage 2 and 3 cleanup rules (checked: none left).
+
+## Fixes after done
+
+### CI: the native build failed on the GitHub runner (2026-10-18)
+
+- **Issue.** Every GitHub Actions job that builds the helper (`typescript`, `native (gcc)`,
+  `native (clang)`) failed within about 10 seconds with `LANDLOCK_ACCESS_FS_IOCTL_DEV undeclared`,
+  `struct landlock_ruleset_attr has no member named scoped`, and `LANDLOCK_SCOPE_*` undeclared
+  (run 39135276550, from `gh run view --log-failed`).
+- **Cause.** `landlock.c` required the build machine's `linux/landlock.h` to know ABI 6, a choice
+  recorded in this report and in `docs/SETUP-WSL2.md` ("fails the build rather than dropping a
+  right"). It held on the owner's Linux 6.18 headers; `ubuntu-latest` ships 6.8 headers (ABI 4).
+  The stricter build never protected anything: use of each right was already gated at run time on
+  the kernel's reported ABI.
+- **Change.** New `native/src/landlock_abi.h` with `#ifndef`-guarded definitions of the three
+  missing constants and an owned `struct aegis_landlock_ruleset_attr` (ABI 6 layout, size asserted
+  to 24 bytes); `landlock.c` includes it and uses that struct. No behaviour change on a kernel that
+  supports the ABI. `docs/SETUP-WSL2.md` corrected.
+- **Commands run and results (local, WSL2).** `landlock.c` compiled with `-std=c11 -Wall -Wextra
+  -Wpedantic -Wconversion -Wshadow -Werror -fsyntax-only` with gcc and clang, against the system
+  headers and against a copy of `linux/landlock.h` with the ABI 5 and 6 definitions stripped (all
+  four compile; the previous source fails the stripped-header case with 5 errors).
+  `node scripts/build-native.mjs all` with `--cc=gcc` and `--cc=clang` built; `node
+  scripts/check-native.mjs` clean (clang-format, clang-tidy, filter table test); `npm run check`:
+  47 files, 451 passed, 11 skipped by design.
+- **Not verified.** The GitHub run itself: nothing was pushed. Whether the `typescript` job's
+  `npm run check` passes on the runner (it needs `systemd-run --user`, user namespaces and a
+  delegated cgroup) is unknown until CI runs; earlier runs of that job also failed.
+
+### CI: what a stock runner can run (2026-10-18)
+
+- **Issue.** With the build fixed (above), run 39135877321 still failed two ways: `clang-format`
+  flagged five spots in `boot.c` (the runner ships clang-format 18.1.3; the sources are formatted
+  with 21.1.8, which differs on some casts), and 99 integration and escape tests failed with
+  `isolation_unavailable` at `mountns`, errno 13 (the runner's AppArmor blocks mounts in an
+  unprivileged user namespace, and it has no delegated cgroup).
+- **Change (owner chose "make CI run only what it can").** `scripts/check-native.mjs` runs the
+  format check only with the pinned clang-format major (21) and otherwise prints a notice;
+  `AEGIS_REQUIRE_FORMAT=1` makes a mismatch an error. New `npm run check:ci` (types, lint, format,
+  unit tests) is what the `typescript` job runs; the cell-based integration and escape tests run
+  in WSL2 with `npm run check`, as every stage report records. clang-tidy still runs in CI.
+- **Deviation to note.** `ci.yml` and `check-native.mjs` belong to Stages 0 to 2; the change is on
+  this branch because Stage 4's run surfaced it and PR 3 carries it.
+- **Measured locally.** `npm run check:ci`: 246 unit tests passed. `check-native` with a stub
+  clang-format 18: format skipped, tidy and filter test pass; with `AEGIS_REQUIRE_FORMAT=1`: format
+  reported failed. Real clang-format 21: clean.
+- **Not verified.** The GitHub run (nothing pushed). CI no longer exercises the real-cell tests, so
+  a green CI says nothing about isolation; the WSL2 results do.
+

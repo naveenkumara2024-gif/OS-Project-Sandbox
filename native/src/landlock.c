@@ -1,19 +1,20 @@
 #define _GNU_SOURCE
 #include "landlock.h"
 
+#include "landlock_abi.h"
 #include "sys.h"
 
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/landlock.h>
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
 
 /*
  * Landlock ruleset (prompt section 4.5). The ruleset comes from a fixed table in this file; the
- * control plane supplies no paths, so there is nothing to validate. The header must be new enough
- * to know ABI 6 (scopes); an older one fails the build rather than silently dropping a right.
+ * control plane supplies no paths, so there is nothing to validate. Rights newer than the build
+ * machine's header come from landlock_abi.h and are used only when the running kernel reports the
+ * ABI that introduced them.
  */
 
 int aegis_landlock_abi(void)
@@ -82,7 +83,7 @@ int aegis_landlock_apply(const aegis_landlock_plan_t *plan, aegis_landlock_info_
     info->abi = abi;
 
     uint64_t fs = fs_all(abi);
-    struct landlock_ruleset_attr attr;
+    struct aegis_landlock_ruleset_attr attr;
     memset(&attr, 0, sizeof attr);
     attr.handled_access_fs = fs;
     if (abi >= 4) {

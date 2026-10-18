@@ -24,7 +24,7 @@ The second command installs the Clang sanitizer runtime that matches your Clang 
 `libclang-rt-21-dev`). Without it the Clang `debug-asan` build fails to link with
 `cannot find libclang_rt.asan.a`; the GCC `debug-asan` build is unaffected.
 
-No `libseccomp-dev` is needed: Stage 4 assembles its seccomp filter itself (ADR 0005). Stage 4 does need kernel headers new enough for Landlock ABI 6 (`linux/landlock.h` must define `LANDLOCK_SCOPE_SIGNAL`; the kernel headers on the owner's machine, Linux 6.18, do); the build fails loudly if they do not. Landlock itself is optional at run time (a run reports whether it was applied).
+No `libseccomp-dev` is needed: Stage 4 assembles its seccomp filter itself (ADR 0005). The kernel headers do not need to know Landlock ABI 6: the values newer than the installed `linux/landlock.h` come from `native/src/landlock_abi.h`, and each is used only when the running kernel reports the ABI that introduced it (the GitHub runner's Ubuntu 24.04 headers stop at ABI 4). Landlock itself is optional at run time (a run reports whether it was applied).
 
 ## 3. Node.js
 
