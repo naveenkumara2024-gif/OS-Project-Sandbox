@@ -24,7 +24,24 @@ function run(tool, args) {
   return r.status === 0;
 }
 
-const formatOk = run('clang-format', ['--dry-run', '--Werror', ...files]);
+// The sources are formatted with one pinned clang-format major. A different major (the GitHub
+// runner ships 18) formats some casts differently, so the check is skipped there with a notice
+// instead of failing on style the pinned tool accepts. AEGIS_REQUIRE_FORMAT=1 makes a version
+// mismatch an error.
+const PINNED_FORMAT_MAJOR = 21;
+function formatCheck() {
+  const v = spawnSync('clang-format', ['--version'], { encoding: 'utf8', shell: false });
+  const major = Number(/version (\d+)\./.exec(v.stdout ?? '')?.[1]);
+  if (major !== PINNED_FORMAT_MAJOR) {
+    console.log(
+      `[check-native] clang-format ${Number.isNaN(major) ? 'unknown' : major} is not the pinned ` +
+        `${PINNED_FORMAT_MAJOR}; format check ${process.env.AEGIS_REQUIRE_FORMAT === '1' ? 'FAILED' : 'skipped'}`,
+    );
+    return process.env.AEGIS_REQUIRE_FORMAT !== '1';
+  }
+  return run('clang-format', ['--dry-run', '--Werror', ...files]);
+}
+const formatOk = formatCheck();
 // Twice: the second pass sees the code that exists only in ablation builds (test-only switches).
 const tidyOk =
   run('clang-tidy', [...cFiles, '--', '-std=c11']) &&

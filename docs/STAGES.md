@@ -70,3 +70,6 @@ Single source of truth for stage state (CLAUDE.md §0.1). Statuses: `planned`, `
 - 2026-10-17: Owner configured a git identity and committed the Stage 4 implementation as `61922bb` on `stage/4-hardening`. The committed tree was re-verified (`npm run check` 451 passed / 11 skipped, native checks clean). Stage 4 -> `done`; report updated with the commit.
 
 - 2026-10-18: Owner asked to fix the failing GitHub CI checks. Cause (from the runner logs): `native/src/landlock.c` needed `linux/landlock.h` to know ABI 5 and 6 (`LANDLOCK_ACCESS_FS_IOCTL_DEV`, `LANDLOCK_SCOPE_*`, `scoped`), and the runner's Ubuntu 24.04 headers stop at ABI 4, so every job that builds the helper failed in about 10 seconds. The bug is Stage 4 code, so per CLAUDE.md 0.8 the fix is on `stage/4-hardening` (Stage 4 -> `in-progress` -> `done`); see the Stage 4 report, "Fixes after done". Stage 5 is already merged into GitHub `main` (PR #2, `3f9fc0f`) and stays `verifying`; how the fix reaches `main` is the owner's call.
+
+- 2026-10-18: CI follow-up on `stage/4-hardening` (owner chose to run only what a stock runner can): format check pinned to clang-format 21 and skipped with a notice otherwise, `npm run check:ci` (no real-cell tests) for the `typescript` job. See the Stage 4 report, "Fixes after done". Stage 4 stays `done`.
+

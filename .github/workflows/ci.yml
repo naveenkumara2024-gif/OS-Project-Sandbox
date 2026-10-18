@@ -19,13 +19,14 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --ignore-scripts
-      # The integration and escape tests run real cells, so they need the helper builds. They also
-      # need unprivileged user namespaces; if the runner forbids them the tests fail loudly
-      # (CLAUDE.md 7), they are not skipped.
+      # CI runs the checks a stock runner can run: types, lint, format and the unit tests. The
+      # integration and escape tests run real cells, which need unprivileged mounts inside a user
+      # namespace and a delegated cgroup; Ubuntu runners block the first (AppArmor) and have no
+      # user systemd for the second, so every cell fails with isolation_unavailable. Those tests
+      # run in WSL2 with `npm run check`, and the stage reports record the measured results.
+      # The helper tests run the probe, which needs the built binaries.
       - run: node scripts/build-native.mjs all
-      # `npm test` runs the suite inside `systemd-run --user --scope` so cells can be placed in a
-      # delegated cgroup. A runner without a systemd user manager fails these tests by design.
-      - run: npm run check
+      - run: npm run check:ci
 
   native:
     runs-on: ubuntu-latest

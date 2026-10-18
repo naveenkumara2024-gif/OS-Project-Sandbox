@@ -247,3 +247,23 @@ touched; cell directories and cgroups follow the Stage 2 and 3 cleanup rules (ch
   `npm run check` passes on the runner (it needs `systemd-run --user`, user namespaces and a
   delegated cgroup) is unknown until CI runs; earlier runs of that job also failed.
 
+### CI: what a stock runner can run (2026-10-18)
+
+- **Issue.** With the build fixed (above), run 39135877321 still failed two ways: `clang-format`
+  flagged five spots in `boot.c` (the runner ships clang-format 18.1.3; the sources are formatted
+  with 21.1.8, which differs on some casts), and 99 integration and escape tests failed with
+  `isolation_unavailable` at `mountns`, errno 13 (the runner's AppArmor blocks mounts in an
+  unprivileged user namespace, and it has no delegated cgroup).
+- **Change (owner chose "make CI run only what it can").** `scripts/check-native.mjs` runs the
+  format check only with the pinned clang-format major (21) and otherwise prints a notice;
+  `AEGIS_REQUIRE_FORMAT=1` makes a mismatch an error. New `npm run check:ci` (types, lint, format,
+  unit tests) is what the `typescript` job runs; the cell-based integration and escape tests run
+  in WSL2 with `npm run check`, as every stage report records. clang-tidy still runs in CI.
+- **Deviation to note.** `ci.yml` and `check-native.mjs` belong to Stages 0 to 2; the change is on
+  this branch because Stage 4's run surfaced it and PR 3 carries it.
+- **Measured locally.** `npm run check:ci`: 246 unit tests passed. `check-native` with a stub
+  clang-format 18: format skipped, tidy and filter test pass; with `AEGIS_REQUIRE_FORMAT=1`: format
+  reported failed. Real clang-format 21: clean.
+- **Not verified.** The GitHub run (nothing pushed). CI no longer exercises the real-cell tests, so
+  a green CI says nothing about isolation; the WSL2 results do.
+
