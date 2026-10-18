@@ -20,7 +20,12 @@ const good = {
       disk_mb: 256,
     },
     network_allow: ['PyPI.org', 'pypi.org'],
+    network_ports: [443, 8443, 443],
     require_at_least: ['seccomp', 'caps_dropped', 'seccomp'],
+    max_cells: 4,
+    memory_budget_mb: 4096,
+    max_sessions: 8,
+    session_idle_s: 1800,
   },
 };
 const parse = (v: unknown) => parsePolicyFile(Buffer.from(JSON.stringify(v)));
@@ -33,6 +38,11 @@ describe('parsePolicyFile', () => {
     expect(r.value.ceiling.networkAllow).toEqual(['pypi.org']);
     expect(r.value.ceiling.requireAtLeast).toEqual(['caps_dropped', 'seccomp']);
     expect(r.value.ceiling.limits.memory_mb).toBe(2048);
+    expect(r.value.ceiling.networkPorts).toEqual([443, 8443]);
+    expect(r.value.ceiling.maxCells).toBe(4);
+    expect(r.value.ceiling.memoryBudgetMb).toBe(4096);
+    expect(r.value.ceiling.maxSessions).toBe(8);
+    expect(r.value.ceiling.sessionIdleS).toBe(1800);
     // commit_roots defaults to ingest_roots, as in Stage 3.
     expect(r.value.commitRoots).toEqual(['/srv/project']);
   });

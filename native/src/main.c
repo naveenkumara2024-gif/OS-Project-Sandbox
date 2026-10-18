@@ -20,13 +20,14 @@ static void say(const char *s)
     (void)w;
 }
 
-/* Parses `init [--require <mask>] [--ablate <mask>] -- argv...`; returns the index of the first
- * payload argument, or 0 when the command line is malformed. The only caller is boot.c, but the
- * binary is also reachable by a person, so this is parsed strictly. */
+/* Parses `init [--require <mask>] [--ablate <mask>] [--broker] -- argv...`; returns the index of
+ * the first payload argument, or 0 when the command line is malformed. The only caller is boot.c,
+ * but the binary is also reachable by a person, so this is parsed strictly. */
 static int parse_init_args(int argc, char **argv, aegis_init_opts_t *opts)
 {
     opts->require_mask = AEGIS_REQ_DEFAULT;
     opts->ablate_mask = 0;
+    opts->broker = 0;
     int i = 2;
     while (i < argc && strcmp(argv[i], "--") != 0) {
         if (strcmp(argv[i], "--require") == 0 && i + 1 < argc) {
@@ -51,6 +52,9 @@ static int parse_init_args(int argc, char **argv, aegis_init_opts_t *opts)
             opts->ablate_mask = (uint32_t)v;
             i += 2;
 #endif
+        } else if (strcmp(argv[i], "--broker") == 0) {
+            opts->broker = 1;
+            i += 1;
         } else {
             return 0;
         }

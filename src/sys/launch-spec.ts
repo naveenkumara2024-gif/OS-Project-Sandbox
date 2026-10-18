@@ -36,6 +36,7 @@ const KEY = {
   workspaceForceCopy: 13,
   requireMask: 14,
   ablateMask: 15,
+  brokerSocket: 16,
 } as const;
 
 /** Bits of REQUIRE_MASK: the layers the helper itself refuses to start without (native/src/spec.h,
@@ -90,6 +91,8 @@ export interface LaunchSpec {
    * unavailable without trying them. Only builds compiled with AEGIS_ENABLE_ABLATION accept it;
    * `release` rejects the spec. */
   readonly ablateMask?: number;
+  /** Host path of the egress broker's Unix socket; present only for a brokered cell. */
+  readonly brokerSocket?: string;
   /** Host paths for the workspace binds (Stage 3); all three present together, or omitted. */
   readonly workspace?: {
     readonly lower: string;
@@ -270,6 +273,13 @@ export function encodeLaunchSpec(spec: LaunchSpec): Result<Uint8Array> {
     b.writeUInt32LE(spec.requireMask, 0);
     w.record(KEY.requireMask, b);
   }
+  if (spec.brokerSocket !== undefined) {
+    if (!isCleanAbsolutePath(spec.brokerSocket)) {
+      return badSpec('broker socket path is not a clean absolute path');
+    }
+    const rb = str(KEY.brokerSocket, spec.brokerSocket, 'broker socket path');
+    if (!rb.ok) return rb;
+  }
   if (spec.ablateMask !== undefined) {
     if (
       !Number.isInteger(spec.ablateMask) ||
@@ -345,6 +355,7 @@ export function decodeLaunchSpec(bytes: Uint8Array): Result<LaunchSpec> {
   let wForceCopy = false;
   let requireMask: number | null = null;
   let ablateMask: number | null = null;
+  let brokerSocket: string | null = null;
 
   const text = (b: Buffer): string | null => {
     if (b.length < 1 || b[b.length - 1] !== 0 || b.subarray(0, b.length - 1).includes(0)) {
@@ -435,6 +446,10 @@ export function decodeLaunchSpec(bytes: Uint8Array): Result<LaunchSpec> {
         requireMask = body.readUInt32LE(0);
         if (requireMask > REQUIRE_MASK_ALL) return badSpec('require mask out of range');
         break;
+      case KEY.brokerSocket:
+        if (s === null || brokerSocket !== null) return badSpec('bad broker socket record');
+        brokerSocket = s;
+        break;
       case KEY.ablateMask:
         if (body.length !== 4 || ablateMask !== null) return badSpec('bad ablate-mask record');
         ablateMask = body.readUInt32LE(0);
@@ -465,6 +480,7 @@ export function decodeLaunchSpec(bytes: Uint8Array): Result<LaunchSpec> {
     cgroupFd,
     ...(requireMask !== null ? { requireMask } : {}),
     ...(ablateMask !== null ? { ablateMask } : {}),
+    ...(brokerSocket !== null ? { brokerSocket } : {}),
     ...(wLower !== null && wRw !== null
       ? { workspace: { lower: wLower, rw: wRw, forceCopy: wForceCopy } }
       : {}),

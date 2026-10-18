@@ -73,6 +73,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     } else {
         must(spec.workspace_lower == NULL && spec.workspace_rw == NULL);
     }
+    if (spec.broker_socket != NULL) {
+        check_str(data, size, spec.broker_socket);
+        must(spec.broker_socket[0] == '/' && !has_dotdot_component(spec.broker_socket));
+    }
     must(spec.argv[spec.argc] == NULL && spec.envp[spec.envc] == NULL);
     for (size_t i = 0; i < spec.argc; i++) {
         check_str(data, size, spec.argv[i]);

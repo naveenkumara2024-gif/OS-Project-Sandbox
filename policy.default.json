@@ -23,6 +23,11 @@
       "disk_mb": 256
     },
     "network_allow": [],
-    "require_at_least": ["caps_dropped", "no_new_privs", "seccomp"]
+    "network_ports": [443],
+    "require_at_least": ["caps_dropped", "no_new_privs", "seccomp"],
+    "max_cells": 4,
+    "memory_budget_mb": 4096,
+    "max_sessions": 8,
+    "session_idle_s": 1800
   }
 }

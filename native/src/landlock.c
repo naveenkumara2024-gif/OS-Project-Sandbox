@@ -73,7 +73,7 @@ static int add_path(int ruleset, const char *path, uint64_t rights, uint64_t han
     return 0;
 }
 
-int aegis_landlock_apply(aegis_landlock_info_t *info)
+int aegis_landlock_apply(const aegis_landlock_plan_t *plan, aegis_landlock_info_t *info)
 {
     memset(info, 0, sizeof *info);
     int abi = aegis_landlock_abi();
@@ -104,23 +104,46 @@ int aegis_landlock_apply(aegis_landlock_info_t *info)
             rc = -1;
             break;
         }
-        /* Writable scratch and workspace. */
-        static const char *const rw[] = {"/workspace", "/tmp", "/dev/shm"};
-        for (size_t i = 0; i < sizeof rw / sizeof *rw; i++) {
-            if (add_path(rs, rw[i], fs, fs) != 0) {
+        if (plan->allow_writes) {
+            /* Writable scratch and workspace. */
+            static const char *const rw[] = {"/workspace", "/tmp", "/dev/shm"};
+            for (size_t i = 0; i < sizeof rw / sizeof *rw; i++) {
+                if (add_path(rs, rw[i], fs, fs) != 0) {
+                    rc = -1;
+                    break;
+                }
+            }
+            if (rc != 0) {
+                break;
+            }
+            /* The bound device nodes. */
+            uint64_t dev = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE |
+                           (abi >= 5 ? LANDLOCK_ACCESS_FS_IOCTL_DEV : 0ULL);
+            if (add_path(rs, "/dev", dev, fs) != 0) {
                 rc = -1;
                 break;
             }
         }
-        if (rc != 0) {
-            break;
-        }
-        /* The bound device nodes. */
-        uint64_t dev = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE |
-                       (abi >= 5 ? LANDLOCK_ACCESS_FS_IOCTL_DEV : 0ULL);
-        if (add_path(rs, "/dev", dev, fs) != 0) {
-            rc = -1;
-            break;
+        /* The one TCP port this process may use, if any. */
+        if (abi >= 4 && (plan->net_connect_port != 0 || plan->net_bind_port != 0)) {
+            struct landlock_net_port_attr np;
+            memset(&np, 0, sizeof np);
+            if (plan->net_connect_port != 0) {
+                np.allowed_access = LANDLOCK_ACCESS_NET_CONNECT_TCP;
+                np.port = plan->net_connect_port;
+                if (aegis_sys_landlock_add_rule(rs, LANDLOCK_RULE_NET_PORT, &np, 0) != 0) {
+                    rc = -1;
+                    break;
+                }
+            }
+            if (plan->net_bind_port != 0) {
+                np.allowed_access = LANDLOCK_ACCESS_NET_BIND_TCP;
+                np.port = plan->net_bind_port;
+                if (aegis_sys_landlock_add_rule(rs, LANDLOCK_RULE_NET_PORT, &np, 0) != 0) {
+                    rc = -1;
+                    break;
+                }
+            }
         }
         if (aegis_sys_landlock_restrict_self(rs, 0) != 0) {
             rc = -1;

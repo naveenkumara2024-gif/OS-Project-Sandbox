@@ -24,6 +24,11 @@ const ceilingLimits: Limits = {
 const ceiling: Ceiling = {
   limits: ceilingLimits,
   networkAllow: ['pypi.org'],
+  networkPorts: [443],
+  maxCells: 4,
+  memoryBudgetMb: 4096,
+  maxSessions: 8,
+  sessionIdleS: 1800,
   requireAtLeast: ['caps_dropped', 'no_new_privs', 'seccomp'],
 };
 
@@ -57,6 +62,41 @@ describe('resolveManifest', () => {
     expect(r.clamped).toEqual([
       { field: 'network.allow', requested: 'evil.example', granted: null },
     ]);
+  });
+
+  it('keeps a brokered request that still has an allowed host', () => {
+    const r = resolveManifest(
+      requestWith({ networkMode: 'brokered', networkAllow: ['pypi.org', 'evil.example'] }),
+      ceiling,
+    );
+    expect(r.manifest.network).toEqual({ mode: 'brokered', allow: ['pypi.org'] });
+    expect(r.clamped).toEqual([
+      { field: 'network.allow', requested: 'evil.example', granted: null },
+    ]);
+  });
+
+  it('turns a brokered request with nothing left on its allowlist into an air-gapped one', () => {
+    const r = resolveManifest(
+      requestWith({ networkMode: 'brokered', networkAllow: ['evil.example'] }),
+      ceiling,
+    );
+    expect(r.manifest.network).toEqual({ mode: 'none', allow: [] });
+    expect(r.clamped).toContainEqual({
+      field: 'network.mode',
+      requested: 'brokered',
+      granted: 'none',
+    });
+    const bare = resolveManifest(requestWith({ networkMode: 'brokered' }), ceiling);
+    expect(bare.manifest.network.mode).toBe('none');
+  });
+
+  it('hashes the network mode, and leaves the hash of an air-gapped manifest unchanged', () => {
+    const a = resolveManifest(requestWith({ networkAllow: ['pypi.org'] }), ceiling);
+    const b = resolveManifest(
+      requestWith({ networkMode: 'brokered', networkAllow: ['pypi.org'] }),
+      ceiling,
+    );
+    expect(a.sha256).not.toBe(b.sha256);
   });
 
   it('adds the ceiling requirements to a request that lists others, never removing them', () => {
@@ -93,6 +133,7 @@ describe('resolveManifest', () => {
 
 const arbLimit = fc.integer({ min: 1, max: 1_000_000_000_000 });
 const arbRequest: fc.Arbitrary<ManifestRequest> = fc.record({
+  networkMode: fc.constantFrom('none' as const, 'brokered' as const),
   limits: fc.record(
     {
       wall_ms: arbLimit,
@@ -143,6 +184,7 @@ describe('resolveManifest properties', () => {
         const again = resolveManifest(
           {
             limits: first.manifest.limits,
+            networkMode: first.manifest.network.mode,
             networkAllow: first.manifest.network.allow,
             require: first.manifest.require,
           },

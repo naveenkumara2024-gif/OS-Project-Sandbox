@@ -329,6 +329,15 @@ export class CellCgroup implements AsyncDisposable {
     return this.#readKeyed('cpu.stat').get('usage_usec') ?? 0;
   }
 
+  /** Memory in use right now, for limit warnings; null when the file is unreadable. */
+  memoryCurrentBytes(): number | null {
+    return this.#readInt('memory.current');
+  }
+
+  pidsCurrent(): number | null {
+    return this.#readInt('pids.current');
+  }
+
   isPopulated(): boolean {
     const t = this.#fs.readText(join(this.path, 'cgroup.events'));
     if (!t.ok) return false;

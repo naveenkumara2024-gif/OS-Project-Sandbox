@@ -1,4 +1,6 @@
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
+import { SERVER_ID } from '../engine/session.js';
 import {
   manifestRequestSchema,
   requestedLimitsSchema,
@@ -21,6 +23,16 @@ const MAX_FILES = 256;
 const MAX_FILE_BYTES = 1024 * 1024;
 const noNulPath = (s: string): boolean => !s.includes('\0') && !s.startsWith('/') && s !== '';
 const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/;
+// Names the engine sets itself (PATH, and the proxy variables of a brokered cell); a request
+// cannot override them.
+const RESERVED_ENV = new Set([
+  'PATH',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'FTP_PROXY',
+]);
 
 const noNul = (s: string): boolean => !s.includes('\0');
 const withinBytes = (s: string): boolean => Buffer.byteLength(s, 'utf8') <= MAX_ARG_BYTES;
@@ -35,8 +47,15 @@ const workspaceSchema = z.strictObject({
   mode: z.enum(['overlay']).optional(),
 });
 
-const requestSchema = z.strictObject({
-  id: z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/),
+export const requestSchema = z.strictObject({
+  // A label for the caller's own bookkeeping. Optional: the engine's own run and session ids are
+  // the authoritative ones.
+  id: z
+    .string()
+    .regex(/^[A-Za-z0-9_.-]{1,64}$/)
+    .optional(),
+  // Continue this session (Stage 5). Only ids the engine generated are accepted.
+  session: z.string().regex(SERVER_ID).optional(),
   files: z.array(fileSchema).max(MAX_FILES).default([]),
   workspace: workspaceSchema.optional(),
   command: z
@@ -51,7 +70,10 @@ const requestSchema = z.strictObject({
 });
 
 export interface RunRequest {
+  /** The caller's label, or one generated here. */
   readonly id: string;
+  /** The session to continue, or null to start a new one (when there are files or a source). */
+  readonly session: string | null;
   readonly files: readonly { readonly path: string; readonly content: string }[];
   readonly workspaceSource: string | null;
   readonly command: readonly string[];
@@ -101,7 +123,7 @@ export function parseRunRequest(input: Buffer | string): Result<RunRequest> {
   const env = new Map<string, string>();
   let envBytes = 0;
   for (const [name, value] of Object.entries(data.env)) {
-    if (!ENV_NAME.test(name) || name === 'PATH' || name.startsWith('LD_')) {
+    if (!ENV_NAME.test(name) || RESERVED_ENV.has(name) || name.startsWith('LD_')) {
       return invalid('env contains a name that is not allowed');
     }
     envBytes += Buffer.byteLength(name, 'utf8') + Buffer.byteLength(value, 'utf8') + 2;
@@ -119,7 +141,8 @@ export function parseRunRequest(input: Buffer | string): Result<RunRequest> {
   );
 
   return ok({
-    id: data.id,
+    id: data.id ?? `q-${randomBytes(8).toString('hex')}`,
+    session: data.session ?? null,
     files: data.files,
     workspaceSource: data.workspace?.source ?? null,
     command: data.command,

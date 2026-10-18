@@ -8,11 +8,14 @@ export type SupervisorKill =
   | { readonly kind: 'timeout'; readonly clock: 'wall' | 'cpu' }
   | { readonly kind: 'output_limit'; readonly stream: 'stdout' | 'stderr' }
   | { readonly kind: 'pids_limit' }
-  | { readonly kind: 'disk_limit'; readonly path: string };
+  | { readonly kind: 'disk_limit'; readonly path: string }
+  /** The caller asked for the run to stop (gateway cancel, MCP cancellation). */
+  | { readonly kind: 'cancelled' };
 
 export type Termination =
   | { readonly cause: 'exit' }
   | { readonly cause: 'timeout'; readonly clock: 'wall' | 'cpu' }
+  | { readonly cause: 'cancelled' }
   | { readonly cause: 'oom' }
   | { readonly cause: 'pids_limit' }
   | { readonly cause: 'output_limit'; readonly stream: 'stdout' | 'stderr' }
@@ -91,6 +94,9 @@ export function classify(f: Facts): Classified {
     k?.kind === 'output_limit' ||
     k?.kind === 'pids_limit' ||
     k?.kind === 'disk_limit';
+  if (!started && k?.kind === 'cancelled') {
+    return { termination: { cause: 'cancelled' }, exitCode: null, limitsHit };
+  }
   if (!started && k?.kind === 'timeout') {
     // The supervisor ended the cell before the payload got going (a very short limit, a loaded
     // machine). Any layer failure records are then consequences of that kill, not causes.
@@ -131,6 +137,7 @@ export function classify(f: Facts): Classified {
   if (full?.kind === 'full') limitsHit.push('disk');
 
   if (k !== null) {
+    if (k.kind === 'cancelled') return { termination: { cause: 'cancelled' }, exitCode, limitsHit };
     if (k.kind === 'timeout')
       return { termination: { cause: 'timeout', clock: k.clock }, exitCode, limitsHit };
     if (k.kind === 'output_limit') {
@@ -178,6 +185,8 @@ export function hintFor(t: Termination, l: HintLimits): string | null {
       return t.clock === 'cpu'
         ? `used more than the ${String(l.cpuMs)} ms CPU budget; the program was spinning or the work is too large`
         : `ran past the ${String(l.wallMs)} ms wall-clock limit; it may be waiting or doing too much`;
+    case 'cancelled':
+      return 'the run was cancelled by the caller';
     case 'oom':
       return `killed at the ${String(l.memoryMb)} MB memory limit; reduce the working set or ask for a higher limit`;
     case 'pids_limit':

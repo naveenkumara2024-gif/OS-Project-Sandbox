@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -21,12 +21,17 @@ import {
   writeInlineFiles,
   type IngestPolicy,
 } from '../stage/ingest.js';
+import { AuditLog, fileAuditSink, type AuditEntry } from '../broker/audit.js';
+import { hostRangesFromRoutes, type Cidr4 } from '../broker/address-policy.js';
+import { Broker, type BrokerLimits, type Dialer, type Resolver } from '../broker/broker.js';
+import { OutputCoalescer, type CellEvent, type LimitName } from '../engine/events.js';
+import { writeFilesToUpper } from '../stage/session-files.js';
 import { planWorkspace } from './workspace-plan.js';
 import { emptyReceiptLayers, isolationLevel, type ReceiptLayers } from '../probe/isolation.js';
 import { superviseCell, type PollVerdict } from '../supervise/cell-supervisor.js';
 import { encodeLaunchSpec, REQUIRE_BITS, type LaunchSpec } from '../sys/launch-spec.js';
 import { HELPER_LAYERS, parseStatus } from '../sys/status.js';
-import { err, errFromException, ok, type Result } from '../util/result.js';
+import { err, errFromException, errnoCode, ok, type Result } from '../util/result.js';
 import { TempDir } from '../util/tempdir.js';
 import {
   CellCgroup,
@@ -41,6 +46,8 @@ import { planUsr, type PlanEnv } from './rootfs-plan.js';
 /** Fixed, not caller-controlled (CLAUDE.md 6.1 item 5); the request may add other names. */
 export const CELL_PATH = '/usr/bin:/bin';
 export const CELL_HOSTNAME = 'aegis';
+/** Where the in-cell forwarder listens (native/src/fwd.h). */
+const FORWARDER_PORT = 3128;
 export const ROOT_TMPFS_BYTES = 64 * 1024 * 1024;
 
 // Best-effort: do not offer the control plane's own runtime inside a cell (CLAUDE.md 6.1 item 2).
@@ -86,8 +93,17 @@ export interface CellResult {
   /** SHA-256 of the policy file as read, so a receipt names the policy that clamped it. */
   readonly ceiling_sha256: string;
   readonly clamped: readonly Clamp[];
-  /** Egress does not exist before Stage 5, whatever the allowlist says. */
-  readonly network: { readonly mode: 'none'; readonly egress: false };
+  /**
+   * The cell's path to the world. `none`: no interface at all. `brokered`: loopback and a forwarder
+   * to the egress broker; `egress` is true only if both were observed, and `audit` lists every
+   * attempt the broker saw (allowed or denied).
+   */
+  readonly network: {
+    readonly mode: 'none' | 'brokered';
+    readonly egress: boolean;
+    readonly audit?: readonly AuditEntry[];
+    readonly audit_dropped?: number;
+  };
   /** Present only when the request carried a workspace or inline files (Stage 3). */
   readonly workspace?: 'overlay' | 'copy';
   readonly changes?: readonly Change[];
@@ -118,6 +134,26 @@ export interface RunCellDeps {
   readonly ingestPolicy?: IngestPolicy;
   readonly workspaceParent?: string;
   readonly forceCopyWorkspace?: boolean;
+  /**
+   * Stage 5: a workspace directory owned by the caller (a session). When `existing`, the lower
+   * layer and upper layer from earlier runs are reused and `files` go into the upper layer.
+   * Without it the directory is `<workspaceParent>/aegis-workspace-<request id>`, as in Stage 3.
+   */
+  readonly workspace?: { readonly dir: string; readonly existing: boolean };
+  /** Receives `started`, output chunks and limit warnings while the cell runs. */
+  readonly onEvent?: (e: CellEvent) => void;
+  /** Aborting it cancels the run with the same kill procedure as a timeout. */
+  readonly signal?: AbortSignal;
+  /** The id the audit log and the broker's records carry; defaults to the request id. */
+  readonly runId?: string;
+  /** Egress broker settings: file for the audit copy, and test seams for DNS and dialing. */
+  readonly broker?: {
+    readonly auditFile?: string;
+    readonly resolver?: Resolver;
+    readonly dial?: Dialer;
+    readonly hostRanges?: readonly Cidr4[];
+    readonly limits?: Partial<BrokerLimits>;
+  };
 }
 
 interface Governed {
@@ -152,13 +188,14 @@ function hintLimits(l: Limits): HintLimits {
 
 function governanceEcho(
   g: Governed,
+  network: CellResult['network'] = { mode: 'none', egress: false },
 ): Pick<CellResult, 'manifest' | 'manifest_sha256' | 'ceiling_sha256' | 'clamped' | 'network'> {
   return {
     manifest: g.manifest,
     manifest_sha256: g.sha256,
     ceiling_sha256: g.ceilingSha256,
     clamped: g.clamped,
-    network: { mode: 'none', egress: false },
+    network,
   };
 }
 
@@ -285,62 +322,136 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
     return rootDir;
   }
 
+  // 2a. The egress broker (Stage 5), for a brokered manifest only: a Unix socket in the per-cell
+  // directory that the helper binds into the cell. Declared after `dir`, so it is closed (and its
+  // socket removed) before the directory is.
+  const brokered = gov.manifest.network.mode === 'brokered';
+  const audit = new AuditLog(
+    deps.broker?.auditFile === undefined
+      ? null
+      : fileAuditSink(deps.broker.auditFile, {
+          run: deps.runId ?? req.id,
+          manifest_sha256: gov.sha256,
+        }),
+  );
+  let brokerSocket: string | null = null;
+  let broker: Broker | null = null;
+  if (brokered) {
+    const hostRanges =
+      deps.broker?.hostRanges ??
+      (() => {
+        try {
+          return hostRangesFromRoutes(readFileSync('/proc/net/route', 'utf8'));
+        } catch {
+          return [];
+        }
+      })();
+    const created = await Broker.create({
+      socketPath: join(dir.path, 'broker.sock'),
+      run: deps.runId ?? req.id,
+      manifestSha256: gov.sha256,
+      allow: gov.manifest.network.allow,
+      ports: deps.governance.ceiling.networkPorts,
+      hostRanges,
+      audit,
+      ...(deps.broker?.resolver === undefined ? {} : { resolver: deps.broker.resolver }),
+      ...(deps.broker?.dial === undefined ? {} : { dial: deps.broker.dial }),
+      ...(deps.broker?.limits === undefined ? {} : { limits: deps.broker.limits }),
+    });
+    if (!created.ok) {
+      return ok(refusal(req, gov, 'broker', created.error.code, cell.layers));
+    }
+    broker = created.value;
+    brokerSocket = created.value.socketPath;
+  }
+  await using brokerGuard = broker;
+
   // 2b. Workspace ingest (Stage 3): a host source and/or inline files staged as the overlay's
   // lower layer. The workspace directory is deliberately NOT disposed with `dir`: it must survive
   // past this run for a later `aegis commit`/`aegis discard`.
-  const needsWorkspace = req.workspaceSource !== null || req.files.length > 0;
+  const reuse = deps.workspace?.existing === true;
+  const needsWorkspace = reuse || req.workspaceSource !== null || req.files.length > 0;
   // overlayfs requires upperdir and workdir to be on the same mount (measured in the step 1
   // spike: separate bind mounts of two host directories give EINVAL even on the same filesystem).
   // So "upper" and "work" are subdirectories of one host directory, `rw`, bound once.
   let workspacePaths: { lower: string; rw: string; upper: string; dir: string } | null = null;
   if (needsWorkspace) {
-    const wsDir = join(deps.workspaceParent ?? tmpdir(), `aegis-workspace-${req.id}`);
-    try {
-      mkdirSync(wsDir);
-      const lowerDir = join(wsDir, 'lower');
-      const rwDir = join(wsDir, 'rw');
-      const upperDir = join(rwDir, 'upper');
-      const workDir = join(rwDir, 'work');
-      mkdirSync(lowerDir);
-      mkdirSync(rwDir);
-      mkdirSync(upperDir);
-      mkdirSync(workDir);
+    const wsDir =
+      deps.workspace?.dir ?? join(deps.workspaceParent ?? tmpdir(), `aegis-workspace-${req.id}`);
+    const lowerDir = join(wsDir, 'lower');
+    const rwDir = join(wsDir, 'rw');
+    const upperDir = join(rwDir, 'upper');
+    const workDir = join(rwDir, 'work');
+    if (reuse) {
+      // A later run of a session: the directories exist from the first run. A source cannot be
+      // ingested again (the lower layer must stay the snapshot the diff is measured against).
+      if (req.workspaceSource !== null) {
+        return ok(refusal(req, gov, 'workspace_policy', 'EINVAL'));
+      }
+      try {
+        for (const d of [lowerDir, upperDir, workDir]) {
+          if (!statSync(d).isDirectory()) throw new Error('not a directory');
+        }
+      } catch (e) {
+        return ok(refusal(req, gov, 'workspace', errnoCode(e)));
+      }
       workspacePaths = { lower: lowerDir, rw: rwDir, upper: upperDir, dir: wsDir };
-    } catch (e) {
-      return errFromException(e, 'create workspace directory');
-    }
-    if (req.workspaceSource !== null) {
-      const policy = deps.ingestPolicy ?? { ingestRoots: [], ingestExcludes: [] };
-      const source = await resolveIngestSource(req.workspaceSource, policy, {
-        fsopPath: deps.helperPath,
-      });
-      if (!source.ok) {
-        return ok(refusal(req, gov, 'workspace_policy', source.error.code));
+      if (req.files.length > 0) {
+        const written = writeFilesToUpper(upperDir, req.files);
+        if (!written.ok) {
+          return ok(refusal(req, gov, 'workspace_files', written.error.code));
+        }
       }
-      const rsynced = await rsyncIngest(source.value, workspacePaths.lower, policy, {
-        writeExcludeFile: (content) => {
-          const excludePath = join(workspacePaths?.dir ?? wsDir, 'rsync-exclude.txt');
-          try {
-            writeFileSync(excludePath, content);
-            return Promise.resolve(ok(excludePath));
-          } catch (e) {
-            return Promise.resolve(errFromException(e, 'write rsync exclude file'));
-          }
-        },
-      });
-      if (!rsynced.ok) {
-        return ok(refusal(req, gov, 'workspace_ingest', rsynced.error.code));
+    } else {
+      try {
+        mkdirSync(wsDir);
+        mkdirSync(lowerDir);
+        mkdirSync(rwDir);
+        mkdirSync(upperDir);
+        mkdirSync(workDir);
+        workspacePaths = { lower: lowerDir, rw: rwDir, upper: upperDir, dir: wsDir };
+      } catch (e) {
+        return errFromException(e, 'create workspace directory');
       }
-    }
-    if (req.files.length > 0) {
-      const written = writeInlineFiles(workspacePaths.lower, req.files);
-      if (!written.ok) {
-        return ok(refusal(req, gov, 'workspace_files', written.error.code));
+      if (req.workspaceSource !== null) {
+        const policy = deps.ingestPolicy ?? { ingestRoots: [], ingestExcludes: [] };
+        const source = await resolveIngestSource(req.workspaceSource, policy, {
+          fsopPath: deps.helperPath,
+        });
+        if (!source.ok) {
+          return ok(refusal(req, gov, 'workspace_policy', source.error.code));
+        }
+        const rsynced = await rsyncIngest(source.value, lowerDir, policy, {
+          writeExcludeFile: (content) => {
+            const excludePath = join(wsDir, 'rsync-exclude.txt');
+            try {
+              writeFileSync(excludePath, content);
+              return Promise.resolve(ok(excludePath));
+            } catch (e) {
+              return Promise.resolve(errFromException(e, 'write rsync exclude file'));
+            }
+          },
+        });
+        if (!rsynced.ok) {
+          return ok(refusal(req, gov, 'workspace_ingest', rsynced.error.code));
+        }
+      }
+      if (req.files.length > 0) {
+        const written = writeInlineFiles(lowerDir, req.files);
+        if (!written.ok) {
+          return ok(refusal(req, gov, 'workspace_files', written.error.code));
+        }
       }
     }
   }
 
-  const env = [`PATH=${CELL_PATH}`, ...[...req.env].map(([k, v]) => `${k}=${v}`)];
+  // A brokered cell is told where its proxy is. The names and the value are fixed here; a request
+  // cannot set them (src/gateway/request.ts reserves the upper-case names).
+  const proxy = `http://127.0.0.1:${String(FORWARDER_PORT)}`;
+  const proxyEnv = brokered
+    ? [`HTTP_PROXY=${proxy}`, `HTTPS_PROXY=${proxy}`, `http_proxy=${proxy}`, `https_proxy=${proxy}`]
+    : [];
+  const env = [`PATH=${CELL_PATH}`, ...proxyEnv, ...[...req.env].map(([k, v]) => `${k}=${v}`)];
   const spec: LaunchSpec = {
     argv: req.command,
     env,
@@ -354,6 +465,7 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
     cgroupFd: true,
     requireMask: requireMaskOf(gov.manifest.require),
     ...(ablateMask !== 0 ? { ablateMask } : {}),
+    ...(brokerSocket !== null ? { brokerSocket } : {}),
     ...(workspacePaths !== null
       ? {
           workspace: planWorkspace(
@@ -375,25 +487,52 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
   // overshoot is at most what can be written in one poll interval.
   const upperCapBytes = lim.disk_mb * 1024 * 1024;
   const upperDir = workspacePaths?.upper ?? null;
+  const emit = deps.onEvent ?? ((): void => undefined);
+  const coalescer = new OutputCoalescer(emit);
+  const outBytes = { stdout: 0, stderr: 0 };
+  const warned = new Set<LimitName>();
+  const warn = (limit: LimitName, used: number | null, max: number): void => {
+    if (used !== null && used >= max * 0.8 && !warned.has(limit)) {
+      warned.add(limit);
+      emit({ type: 'limit_warning', limit, used: Math.round(used), max });
+    }
+  };
+  const startedAt = performance.now();
+  const outputCap = lim.output_kb * 1024;
   const poll = (): PollVerdict | null => {
+    warn('wall', performance.now() - startedAt, lim.wall_ms);
+    const cpuUs = cell.cpuUsageUs();
+    warn('cpu', cpuUs, cpuBudgetUs);
+    warn('memory', cell.memoryCurrentBytes(), lim.memory_mb * 1024 * 1024);
+    warn('pids', cell.pidsCurrent(), lim.pids);
+    warn('output', Math.max(outBytes.stdout, outBytes.stderr), outputCap);
     if (cell.pidsMaxHits() > 0) return { kind: 'pids_limit' };
-    if (cell.cpuUsageUs() > cpuBudgetUs) return { kind: 'timeout', clock: 'cpu' };
-    if (upperDir !== null && treeBytes(upperDir, upperCapBytes) > upperCapBytes) {
-      return { kind: 'disk_limit', path: '/workspace' };
+    if (cpuUs > cpuBudgetUs) return { kind: 'timeout', clock: 'cpu' };
+    if (upperDir !== null) {
+      const used = treeBytes(upperDir, upperCapBytes);
+      warn('disk', used, upperCapBytes);
+      if (used > upperCapBytes) return { kind: 'disk_limit', path: '/workspace' };
     }
     return null;
   };
+  emit({ type: 'started' });
   const ran = await superviseCell({
     helper: deps.helperPath,
     spec: encoded.value,
     wallMs: lim.wall_ms,
-    maxOutputBytes: lim.output_kb * 1024,
+    maxOutputBytes: outputCap,
     cgroupFd: cell.dirFd.fd,
     poll,
     killCell: () => {
       cell.kill();
     },
+    onOutput: (stream, chunk) => {
+      outBytes[stream] += chunk.length;
+      coalescer.write(stream, chunk);
+    },
+    ...(deps.signal === undefined ? {} : { signal: deps.signal }),
   });
+  coalescer.end();
   if (!ran.ok) {
     return ran;
   }
@@ -406,6 +545,7 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
     stuck = !(await cell.waitEmpty(EMPTY_WAIT_MS));
   }
   const stats = cell.stats();
+  await brokerGuard?.close();
 
   const parsed = parseStatus(o.status);
   if (!parsed.ok) {
@@ -438,20 +578,6 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
           : diffCopyResult(workspacePaths.lower, workspacePaths.upper);
       if (d.ok) {
         changes = d.value;
-        try {
-          writeFileSync(
-            join(workspacePaths.dir, 'changes.json'),
-            JSON.stringify({
-              mode: workspaceMode,
-              upper: workspacePaths.upper,
-              lower: workspacePaths.lower,
-              changes,
-            }),
-          );
-        } catch {
-          // Best effort: a later `aegis commit` finds nothing recorded and reports that, rather
-          // than this already-complete run result failing over a bookkeeping write.
-        }
       }
     }
   }
@@ -469,11 +595,23 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
   // output is withheld rather than presented as the result of a compliant run.
   // Only a payload that actually started can have violated it; a cell that was killed or failed
   // before `started` never ran anything, and its own termination already says why.
-  const missing = gov.manifest.require.find((l) => !layers[l]);
+  const missing = [
+    ...gov.manifest.require,
+    ...(brokered ? (['loopback', 'broker'] as const) : []),
+  ].find((l) => !layers[l]);
   const violated = missing !== undefined && records.some((r) => r.kind === 'started') && !stuck;
   if (violated) {
     termination = { cause: 'isolation_unavailable', layer: missing, errno: errnoNumber('EPROTO') };
   }
+
+  const networkEcho: CellResult['network'] = brokered
+    ? {
+        mode: 'brokered',
+        egress: layers.loopback && layers.broker && !violated,
+        audit: audit.entries,
+        ...(audit.dropped > 0 ? { audit_dropped: audit.dropped } : {}),
+      }
+    : { mode: 'none', egress: false };
 
   const base = {
     id: req.id,
@@ -493,7 +631,7 @@ export async function runCell(req: RunRequest, deps: RunCellDeps): Promise<Resul
       ? 'the cell did not empty after the kill; it was left for the reaper'
       : hintFor(termination, hintLimits(lim)),
     isolation: { level: isolationLevel(layers), layers, landlock_abi: landlockAbi },
-    ...governanceEcho(gov),
+    ...governanceEcho(gov, networkEcho),
     ...(workspacePaths !== null ? { workspace: workspaceMode ?? 'copy', changes } : {}),
   };
   if (termination.cause === 'isolation_unavailable') {

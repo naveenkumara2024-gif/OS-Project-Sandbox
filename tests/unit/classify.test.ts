@@ -212,4 +212,27 @@ describe('classify', () => {
     });
     expect(hint).toMatch(/seccomp/);
   });
+
+  it('a cancelled run is cancelled, whether or not it had started', () => {
+    for (const records of [[started, { kind: 'signaled' as const, signal: 9 }], []]) {
+      const c = classify({
+        records,
+        supervisorKill: { kind: 'cancelled' },
+        oomKills: 0,
+        pidsMaxHits: 0,
+      });
+      expect(c.termination).toEqual({ cause: 'cancelled' });
+      expect(c.limitsHit).toEqual([]);
+      expect(
+        hintFor(c.termination, {
+          wallMs: 1,
+          cpuMs: 1,
+          memoryMb: 1,
+          pids: 1,
+          outputKb: 1,
+          diskMb: 1,
+        }),
+      ).toMatch(/cancelled/);
+    }
+  });
 });

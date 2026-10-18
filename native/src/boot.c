@@ -1,19 +1,23 @@
 #define _GNU_SOURCE
 #include "boot.h"
 
+#include "fwd.h"
 #include "overlay.h"
 #include "spec.h"
 #include "sys.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <net/if.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
@@ -345,6 +349,40 @@ static int bind_devices(const char *root)
     return 0;
 }
 
+/*
+ * Brings loopback up inside the new network namespace and reads the flags back. The cell's root in
+ * its user namespace owns the namespace, so this needs no privilege on the host. It is only done
+ * for a brokered cell: the payload then has a loopback and nothing else.
+ */
+static int bring_up_loopback(void)
+{
+    int s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (s < 0) {
+        return -1;
+    }
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof ifr);
+    memcpy(ifr.ifr_name, "lo", 3);
+    if (ioctl(s, SIOCGIFFLAGS, &ifr) != 0) {
+        close(s);
+        return -1;
+    }
+    ifr.ifr_flags = (short)(ifr.ifr_flags | IFF_UP);
+    if (ioctl(s, SIOCSIFFLAGS, &ifr) != 0) {
+        close(s);
+        return -1;
+    }
+    memset(&ifr, 0, sizeof ifr);
+    memcpy(ifr.ifr_name, "lo", 3);
+    int rc = ioctl(s, SIOCGIFFLAGS, &ifr);
+    close(s);
+    if (rc != 0 || (ifr.ifr_flags & IFF_UP) == 0) {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
+}
+
 /* Runs in the clone3 child as PID 1 of the new namespaces; never returns. */
 static void child_main(int sync_fd)
 {
@@ -539,6 +577,16 @@ static void child_main(int sync_fd)
         }
     }
 
+    /* 6d. The egress broker's socket (Stage 5): a file bind of the host's Unix socket, so the
+     * forwarder can reach the broker. A path-based socket crosses the mount namespace by design;
+     * the broker judges every request, and this is the only host path the cell is given. */
+    if (s->broker_socket != NULL) {
+        if (join_path(p, sizeof p, root, AEGIS_BROKER_SOCK_IN_CELL) != 0 || touch_file(p) != 0 ||
+            mount(s->broker_socket, p, NULL, MS_BIND, NULL) != 0 || harden_bind(p) != 0) {
+            child_fail("broker", errno);
+        }
+    }
+
     /* 7. /dev, /dev/shm, /tmp, /etc. */
     if (join_path(p, sizeof p, root, "/dev") != 0 ||
         mount("tmpfs", p, "tmpfs", MS_NOSUID, "size=65536,mode=0755") != 0) {
@@ -618,6 +666,12 @@ static void child_main(int sync_fd)
         child_fail("overlay", ENOENT); /* required, but the run has no workspace at all */
     }
 
+    if (s->broker_socket != NULL) {
+        if (bring_up_loopback() != 0) {
+            child_fail("loopback", errno);
+        }
+        status_layer("loopback", 1, 0);
+    }
     for (size_t i = 0; i < NS_COUNT; i++) {
         status_layer(k_ns[i].layer, 1, 0);
     }
@@ -628,7 +682,7 @@ static void child_main(int sync_fd)
     /* Replace this process with init, which starts the payload. The environment is the spec's
      * explicit one and init passes it on unchanged. Descriptor 4 (status) must survive this exec
      * so init can report; 3, 5 and 6 stay close-on-exec and are closed by it. */
-    static char *init_argv[AEGIS_SPEC_MAX_ARGV + 8U];
+    static char *init_argv[AEGIS_SPEC_MAX_ARGV + 9U];
     static char require_text[16];
     if (snprintf(require_text, sizeof require_text, "%u", (unsigned)s->require_mask) < 0) {
         child_fail("exec", EINVAL);
@@ -648,6 +702,9 @@ static void child_main(int sync_fd)
         init_argv[ia++] = ablate_text;
     }
 #endif
+    if (s->broker_socket != NULL) {
+        init_argv[ia++] = (char *)(uintptr_t)"--broker";
+    }
     init_argv[ia++] = (char *)(uintptr_t)"--";
     for (size_t i = 0; i < s->argc; i++) {
         init_argv[ia++] = (char *)(uintptr_t)s->argv[i];

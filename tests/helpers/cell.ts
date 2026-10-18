@@ -40,6 +40,8 @@ export function testGovernance(
   override: {
     readonly requireAtLeast?: readonly ReceiptLayer[];
     readonly limits?: Partial<Limits>;
+    readonly networkAllow?: readonly string[];
+    readonly networkPorts?: readonly number[];
   } = {},
 ): RunCellDeps['governance'] {
   const p = loadPolicy(join(root, 'policy.default.json'));
@@ -50,6 +52,8 @@ export function testGovernance(
     ceiling: {
       ...p.value.ceiling,
       limits: { ...p.value.ceiling.limits, ...override.limits },
+      ...(override.networkAllow === undefined ? {} : { networkAllow: override.networkAllow }),
+      ...(override.networkPorts === undefined ? {} : { networkPorts: override.networkPorts }),
       ...(override.requireAtLeast === undefined ? {} : { requireAtLeast: override.requireAtLeast }),
     },
     ceilingSha256: p.value.ceilingSha256,

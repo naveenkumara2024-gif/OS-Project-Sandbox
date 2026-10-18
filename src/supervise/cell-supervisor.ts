@@ -29,6 +29,10 @@ export interface SuperviseOptions {
   readonly pollMs?: number;
   /** Kills every process in the cell directly (cgroup.kill); the helper kill stays as a backstop. */
   readonly killCell?: () => void;
+  /** Called with each chunk read from stdout or stderr (before the cap is applied). */
+  readonly onOutput?: (stream: 'stdout' | 'stderr', chunk: Buffer) => void;
+  /** Aborting it cancels the run with the same kill procedure as a timeout. */
+  readonly signal?: AbortSignal;
 }
 
 export interface SuperviseOutcome {
@@ -129,6 +133,15 @@ export function superviseCell(opts: SuperviseOptions): Promise<Result<SuperviseO
       requestKill();
     };
 
+    const onAbort = (): void => {
+      kill({ kind: 'cancelled' });
+    };
+    if (opts.signal?.aborted === true) {
+      onAbort();
+    } else {
+      opts.signal?.addEventListener('abort', onAbort, { once: true });
+    }
+
     const wallTimer = setTimeout(() => {
       kill({ kind: 'timeout', clock: 'wall' });
     }, opts.wallMs);
@@ -147,11 +160,13 @@ export function superviseCell(opts: SuperviseOptions): Promise<Result<SuperviseO
     );
 
     out.on('data', (chunk: Buffer) => {
+      opts.onOutput?.('stdout', chunk);
       if (!stdout.push(chunk)) {
         kill({ kind: 'output_limit', stream: 'stdout' });
       }
     });
     errStream.on('data', (chunk: Buffer) => {
+      opts.onOutput?.('stderr', chunk);
       if (!stderr.push(chunk)) {
         kill({ kind: 'output_limit', stream: 'stderr' });
       }
@@ -167,6 +182,7 @@ export function superviseCell(opts: SuperviseOptions): Promise<Result<SuperviseO
       clearTimeout(hardTimer);
       if (pollTimer !== null) clearInterval(pollTimer);
       if (graceTimer !== null) clearTimeout(graceTimer);
+      opts.signal?.removeEventListener('abort', onAbort);
       resolve(errFromException(e, 'spawn aegis-cell'));
     });
 
@@ -177,6 +193,7 @@ export function superviseCell(opts: SuperviseOptions): Promise<Result<SuperviseO
       clearTimeout(hardTimer);
       if (pollTimer !== null) clearInterval(pollTimer);
       if (graceTimer !== null) clearTimeout(graceTimer);
+      opts.signal?.removeEventListener('abort', onAbort);
       resolve(
         ok({
           stdout: stdout.toBuffer(),
